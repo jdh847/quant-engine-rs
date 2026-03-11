@@ -35,3 +35,7 @@ This checklist is for making the repo safe and boring to publish.
 - `cargo clippy -D warnings`
 - `cargo test`
 - GitHub Actions CI is green
+
+## Publish
+
+- If you want to flip the repo to public: `./scripts/make_repo_public.sh <owner/repo>`
