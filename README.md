@@ -65,6 +65,13 @@ Detailed mapping: `docs/GITHUB_LEARNINGS.md`
 ## Quick start
 
 ```bash
+# one-command demo (creates outputs_rust/demo/run_<timestamp>/dashboard.html)
+cargo run -- demo --config config/bot.toml --lang en
+
+# macOS: open the latest demo dashboard
+open "$(cat outputs_rust/demo/LATEST_DASHBOARD.txt)"
+
+# standard run (writes to outputs_rust/)
 cargo run -- run --config config/bot.toml --output-dir outputs_rust --lang en
 
 # optional: force strategy plugin for this run

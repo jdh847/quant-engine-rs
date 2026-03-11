@@ -117,6 +117,22 @@ pub fn msg_dashboard(lang: Language) -> &'static str {
     }
 }
 
+pub fn msg_demo_completed(lang: Language) -> &'static str {
+    match lang {
+        Language::Zh => "Demo 完成",
+        Language::Ja => "デモ完了",
+        Language::En => "demo completed",
+    }
+}
+
+pub fn msg_open_dashboard_hint(lang: Language) -> &'static str {
+    match lang {
+        Language::Zh => "用浏览器打开（macOS 可用 open 命令）",
+        Language::Ja => "ブラウザで開く（macOS は open コマンド）",
+        Language::En => "open in a browser (macOS: open command)",
+    }
+}
+
 pub fn msg_walk_forward_completed(lang: Language) -> &'static str {
     match lang {
         Language::Zh => "滚动优化完成",

@@ -24,6 +24,12 @@
 ## 快速开始
 
 ```bash
+# 一条命令跑 Demo（生成 outputs_rust/demo/run_<timestamp>/dashboard.html）
+cargo run -- demo --config config/bot.toml --lang zh
+
+# macOS：打开最近一次 Demo 的 dashboard
+open "$(cat outputs_rust/demo/LATEST_DASHBOARD.txt)"
+
 cargo run -- run --config config/bot.toml --output-dir outputs_rust --lang zh
 
 # 可选：强制切换策略插件

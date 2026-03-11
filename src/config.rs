@@ -579,14 +579,15 @@ fn detect_project_root(abs_config_path: &Path) -> PathBuf {
 }
 
 fn validate_broker(broker: &BrokerConfig, ibkr: &IbkrConfig) -> Result<()> {
+    // This repo is intentionally paper-only. Enforce it for all broker modes.
+    if !broker.paper_only {
+        return Err(anyhow!(
+            "broker.paper_only must stay true (paper-only repository)"
+        ));
+    }
     match broker.mode.as_str() {
         "sim" => Ok(()),
         "ibkr_paper" => {
-            if !broker.paper_only {
-                return Err(anyhow!(
-                    "broker.paper_only must stay true for ibkr_paper mode"
-                ));
-            }
             if ibkr.enabled && !ibkr.allow_remote_paper {
                 let safe_hosts = ["127.0.0.1", "localhost"];
                 if !safe_hosts

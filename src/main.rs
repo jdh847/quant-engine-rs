@@ -12,8 +12,9 @@ use private_quant_bot::{
     data_quality::{run_data_quality_check, DataQualityRequest},
     engine::{summarize_result, BacktestStats, QuantBotEngine},
     i18n::{
-        msg_benchmark_completed, msg_dashboard, msg_replay_completed, msg_research_completed,
-        msg_run_completed, msg_walk_forward_completed, Language,
+        msg_benchmark_completed, msg_dashboard, msg_demo_completed, msg_open_dashboard_hint,
+        msg_replay_completed, msg_research_completed, msg_run_completed,
+        msg_walk_forward_completed, Language,
     },
     leaderboard::{build_public_leaderboard, LeaderboardRequest},
     optimize::{run_walk_forward, WalkForwardRequest},
@@ -54,6 +55,12 @@ enum Command {
         config: String,
         #[arg(long, default_value = "outputs_rust")]
         output_dir: String,
+    },
+    Demo {
+        #[arg(long, default_value = "config/bot.toml")]
+        config: String,
+        #[arg(long, default_value = "outputs_rust/demo")]
+        output_root: String,
     },
     Optimize {
         #[arg(long, default_value = "config/bot.toml")]
@@ -232,6 +239,15 @@ fn main() -> Result<()> {
             language,
             cli.strategy_plugin.as_deref(),
         ),
+        Command::Demo {
+            config,
+            output_root,
+        } => demo_command(
+            &config,
+            &output_root,
+            language,
+            cli.strategy_plugin.as_deref(),
+        ),
         Command::Optimize {
             config,
             output_dir,
@@ -385,6 +401,83 @@ fn main() -> Result<()> {
             force,
         } => scaffold_plugin_command(&id, &output_dir, force),
     }
+}
+
+fn demo_command(
+    config_path: &str,
+    output_root: &str,
+    language: Language,
+    strategy_plugin_override: Option<&str>,
+) -> Result<()> {
+    let mut cfg = load_config(config_path)?;
+    apply_strategy_plugin_override(&mut cfg, strategy_plugin_override)?;
+    let data = load_data_for_config(&cfg)?;
+
+    let output_dir = make_demo_output_dir(output_root)?;
+    let output_dir_str = output_dir.to_string_lossy();
+    let result = QuantBotEngine::from_config(cfg.clone(), data.clone())?.run();
+    write_outputs(output_dir_str.as_ref(), &result)?;
+    let _ = write_factor_attribution_report(&cfg, &data, output_dir_str.as_ref())?;
+    let stats = summarize_result(&result);
+    let dashboard_path = build_dashboard_with_language(output_dir_str.as_ref(), language)?;
+    write_demo_latest(output_root, &output_dir, &dashboard_path)?;
+
+    println!(
+        "{} | dates={} trades={} rejections={} final_equity={:.2}",
+        msg_demo_completed(language),
+        result.equity_curve.len(),
+        stats.trades,
+        stats.rejections,
+        stats.end_equity
+    );
+    println!("{}: {}", msg_dashboard(language), dashboard_path.display());
+    println!(
+        "{}: {}",
+        msg_open_dashboard_hint(language),
+        dashboard_path.display()
+    );
+    let registry = append_registry_backtest(BacktestRegistryLog {
+        cfg: &cfg,
+        command: "demo",
+        output_dir: output_dir_str.as_ref(),
+        strategy_plugin: &cfg.strategy.strategy_plugin,
+        portfolio_method: &cfg.strategy.portfolio_method,
+        primary_metric_name: "pnl_ratio",
+        primary_metric_value: stats.pnl_ratio,
+        stats: &stats,
+        notes: "demo run (paper-only)",
+    })?;
+    println!(
+        "run_registry: {} (runs={})",
+        registry.csv_path.display(),
+        registry.total_runs
+    );
+
+    Ok(())
+}
+
+fn make_demo_output_dir(output_root: &str) -> Result<PathBuf> {
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let dir = PathBuf::from(output_root).join(format!("run_{ts}"));
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("create demo output dir {}", dir.display()))?;
+    Ok(dir)
+}
+
+fn write_demo_latest(output_root: &str, run_dir: &Path, dashboard_path: &Path) -> Result<()> {
+    let root = PathBuf::from(output_root);
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("create demo output root {}", root.display()))?;
+
+    // Absolute paths avoid cwd confusion for users running from different directories.
+    std::fs::write(root.join("LATEST_RUN.txt"), run_dir.display().to_string())
+        .context("write LATEST_RUN.txt")?;
+    std::fs::write(
+        root.join("LATEST_DASHBOARD.txt"),
+        dashboard_path.display().to_string(),
+    )
+    .context("write LATEST_DASHBOARD.txt")?;
+    Ok(())
 }
 
 fn plugins_command() -> Result<()> {

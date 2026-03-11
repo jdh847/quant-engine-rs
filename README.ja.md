@@ -24,6 +24,12 @@
 ## クイックスタート
 
 ```bash
+# ワンコマンドのデモ（outputs_rust/demo/run_<timestamp>/dashboard.html を生成）
+cargo run -- demo --config config/bot.toml --lang ja
+
+# macOS: 最新デモの dashboard を開く
+open "$(cat outputs_rust/demo/LATEST_DASHBOARD.txt)"
+
 cargo run -- run --config config/bot.toml --output-dir outputs_rust --lang ja
 
 # 任意: 実行時に戦略プラグインを上書き
