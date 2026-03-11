@@ -225,9 +225,11 @@ fn write_report(output_dir: impl AsRef<Path>, report: &DataQualityReport) -> Res
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use crate::config::load_config;
 
-    use super::{run_data_quality_check, DataQualityRequest};
+    use super::{inspect_market_csv, run_data_quality_check, DataQualityRequest};
 
     #[test]
     fn data_quality_runs_on_sample_data() {
@@ -242,5 +244,24 @@ mod tests {
         )
         .expect("quality check");
         assert!(!report.rows.is_empty());
+    }
+
+    #[test]
+    fn non_trading_days_are_flagged_as_warn() {
+        let dir = std::env::temp_dir().join("pqbot_data_quality_non_trading_day");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("mkdir");
+
+        // 2025-01-04 is a Saturday.
+        let csv_path = dir.join("us.csv");
+        fs::write(
+            &csv_path,
+            "date,symbol,close,volume\n2025-01-04,AAA,10.0,1000\n",
+        )
+        .expect("write csv");
+
+        let row = inspect_market_csv("US", &csv_path, 0.35, 10).expect("inspect");
+        assert_eq!(row.non_trading_day_rows, 1);
+        assert_eq!(row.status, "WARN");
     }
 }

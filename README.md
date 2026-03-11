@@ -113,10 +113,12 @@ Generates:
 - `outputs_rust/factor_attribution.csv`
 - `outputs_rust/factor_attribution_summary.txt`
 - `outputs_rust/robustness/robustness_folds.csv` (via `robustness`)
-- `outputs_rust/data_quality/data_quality_report.csv` (via `validate-data`)
+- `outputs_rust/data_quality_report.csv` / `data_quality_summary.txt` (via `run`/`demo` default `validate-data`)
 - `outputs_rust/daemon/paper_daemon_state.json` (via `paper-daemon`)
 - `outputs_rust/run_registry.csv` / `run_registry.json` / `run_registry_top.md` (auto-updated by each command)
 - `outputs_rust/leaderboard/leaderboard_public.csv` / `.md` / `.html` (via `leaderboard`)
+
+Disable automatic data validation with `--skip-validate-data` (you can still run `validate-data` manually to any output dir, e.g. `outputs_rust/data_quality/`).
 
 `summary.txt` includes:
 

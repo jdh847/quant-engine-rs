@@ -6,3 +6,5 @@ outputs_rust/
 outputs_rust_verify_registry/
 target/
 *.tar.gz
+data_synth/
+data_synth*/

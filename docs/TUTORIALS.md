@@ -13,6 +13,7 @@ Expected:
 
 - a new folder under `outputs_rust/demo/run_<timestamp>/`
 - `dashboard.html` with KPI cards + trades/rejections/factors panels
+- by default, `validate-data` is run and dashboard shows Data Quality (use `--skip-validate-data` to disable)
 
 Committed HTML example:
 
@@ -55,16 +56,16 @@ Expected:
 
 ## 4) Data Quality Check (Credibility Gate)
 
-Run the validator on your dataset (pass the same `--output-dir` as your run if you want it shown in the dashboard):
+`run` / `demo` already run this by default. You can also run it manually:
 
 ```bash
-cargo run -- validate-data --config config/bot.toml --output-dir outputs_rust --return-outlier-threshold 0.35 --gap-days-threshold 10
+cargo run -- validate-data --config config/bot.toml --output-dir outputs_rust/data_quality --return-outlier-threshold 0.35 --gap-days-threshold 10
 ```
 
 Expected:
 
-- `outputs_rust/data_quality_report.csv`
-- `outputs_rust/data_quality_summary.txt`
+- `outputs_rust/data_quality/data_quality_report.csv`
+- `outputs_rust/data_quality/data_quality_summary.txt`
 
 ## 5) Generate a Reproducible Synthetic Dataset (No External Data)
 

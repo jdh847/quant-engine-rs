@@ -60,12 +60,16 @@ enum Command {
         config: String,
         #[arg(long, default_value = "outputs_rust")]
         output_dir: String,
+        #[arg(long, default_value_t = false)]
+        skip_validate_data: bool,
     },
     Demo {
         #[arg(long, default_value = "config/bot.toml")]
         config: String,
         #[arg(long, default_value = "outputs_rust/demo")]
         output_root: String,
+        #[arg(long, default_value_t = false)]
+        skip_validate_data: bool,
     },
     Serve {
         #[arg(long, default_value = "outputs_rust")]
@@ -277,19 +281,27 @@ fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Run {
         config: "config/bot.toml".to_string(),
         output_dir: "outputs_rust".to_string(),
+        skip_validate_data: false,
     }) {
-        Command::Run { config, output_dir } => run_command(
+        Command::Run {
+            config,
+            output_dir,
+            skip_validate_data,
+        } => run_command(
             &config,
             &output_dir,
+            skip_validate_data,
             language,
             cli.strategy_plugin.as_deref(),
         ),
         Command::Demo {
             config,
             output_root,
+            skip_validate_data,
         } => demo_command(
             &config,
             &output_root,
+            skip_validate_data,
             language,
             cli.strategy_plugin.as_deref(),
         ),
@@ -493,15 +505,15 @@ struct GenSynthDataArgs {
 }
 
 fn gen_synth_data_command(args: GenSynthDataArgs) -> Result<()> {
-    let start = chrono::NaiveDate::parse_from_str(&args.start_date, "%Y-%m-%d").with_context(
-        || format!("invalid start_date: {} (expected YYYY-MM-DD)", args.start_date),
-    )?;
-    let end = chrono::NaiveDate::parse_from_str(&args.end_date, "%Y-%m-%d").with_context(|| {
-        format!(
-            "invalid end_date: {} (expected YYYY-MM-DD)",
-            args.end_date
-        )
-    })?;
+    let start =
+        chrono::NaiveDate::parse_from_str(&args.start_date, "%Y-%m-%d").with_context(|| {
+            format!(
+                "invalid start_date: {} (expected YYYY-MM-DD)",
+                args.start_date
+            )
+        })?;
+    let end = chrono::NaiveDate::parse_from_str(&args.end_date, "%Y-%m-%d")
+        .with_context(|| format!("invalid end_date: {} (expected YYYY-MM-DD)", args.end_date))?;
 
     generate_synth_dataset(&SynthDatasetRequest {
         output_dir: PathBuf::from(&args.output_dir),
@@ -607,6 +619,7 @@ fn dataset_manifest_command(config_path: &str, output_path: &str) -> Result<()> 
 fn demo_command(
     config_path: &str,
     output_root: &str,
+    skip_validate_data: bool,
     language: Language,
     strategy_plugin_override: Option<&str>,
 ) -> Result<()> {
@@ -620,6 +633,26 @@ fn demo_command(
     write_outputs(output_dir_str.as_ref(), &result)?;
     let _ = write_factor_attribution_report(&cfg, &data, output_dir_str.as_ref())?;
     let stats = summarize_result(&result);
+
+    let audit_path = write_audit_snapshot(
+        &output_dir,
+        "demo",
+        "paper-only demo",
+        Path::new(config_path),
+        &cfg,
+        &stats,
+    )?;
+    if !skip_validate_data {
+        let _ = run_data_quality_check(
+            &cfg,
+            &DataQualityRequest {
+                return_outlier_threshold: 0.35,
+                gap_days_threshold: 10,
+            },
+            &output_dir,
+        )?;
+    }
+
     let dashboard_path = build_dashboard_with_language(output_dir_str.as_ref(), language)?;
     write_demo_latest(output_root, &output_dir, &dashboard_path)?;
 
@@ -637,14 +670,6 @@ fn demo_command(
         msg_open_dashboard_hint(language),
         dashboard_path.display()
     );
-    let audit_path = write_audit_snapshot(
-        &output_dir,
-        "demo",
-        "paper-only demo",
-        Path::new(config_path),
-        &cfg,
-        &stats,
-    )?;
     println!("audit_snapshot: {}", audit_path.display());
     let registry = append_registry_backtest(BacktestRegistryLog {
         cfg: &cfg,
@@ -841,6 +866,7 @@ fn sdk_register_command(
 fn run_command(
     config_path: &str,
     output_dir: &str,
+    skip_validate_data: bool,
     language: Language,
     strategy_plugin_override: Option<&str>,
 ) -> Result<()> {
@@ -852,6 +878,24 @@ fn run_command(
     write_outputs(output_dir, &result)?;
     let attribution = write_factor_attribution_report(&cfg, &data, output_dir)?;
     let stats = summarize_result(&result);
+    let audit_path = write_audit_snapshot(
+        output_dir,
+        "run",
+        "paper run",
+        Path::new(config_path),
+        &cfg,
+        &stats,
+    )?;
+    if !skip_validate_data {
+        let _ = run_data_quality_check(
+            &cfg,
+            &DataQualityRequest {
+                return_outlier_threshold: 0.35,
+                gap_days_threshold: 10,
+            },
+            output_dir,
+        )?;
+    }
     let dashboard_path = build_dashboard_with_language(output_dir, language)?;
 
     println!(
@@ -868,14 +912,6 @@ fn run_command(
         "factor_attribution_summary: {}",
         attribution.summary_path.display()
     );
-    let audit_path = write_audit_snapshot(
-        output_dir,
-        "run",
-        "paper run",
-        Path::new(config_path),
-        &cfg,
-        &stats,
-    )?;
     println!("audit_snapshot: {}", audit_path.display());
     let registry = append_registry_backtest(BacktestRegistryLog {
         cfg: &cfg,
