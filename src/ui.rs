@@ -42,6 +42,8 @@ struct AuditMarketUi {
     data_sha256: String,
     industry_file: String,
     industry_sha256: String,
+    holiday_file: String,
+    holiday_sha256: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -64,6 +66,8 @@ struct AuditMarketCompat {
     data_file: AuditFileCompat,
     #[serde(default)]
     industry_file: Option<AuditFileCompat>,
+    #[serde(default)]
+    holiday_file: Option<AuditFileCompat>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -124,6 +128,7 @@ struct DashboardI18nText {
     issues: String,
     data_file: String,
     industry_file: String,
+    holiday_file: String,
     sha256: String,
     kpi_start_equity: String,
     kpi_end_equity: String,
@@ -178,6 +183,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         issues: t.issues.to_string(),
         data_file: t.data_file.to_string(),
         industry_file: t.industry_file.to_string(),
+        holiday_file: t.holiday_file.to_string(),
         sha256: t.sha256.to_string(),
         kpi_start_equity: t.kpi_start_equity.to_string(),
         kpi_end_equity: t.kpi_end_equity.to_string(),
@@ -451,6 +457,7 @@ th {{ color: var(--muted); font-weight: 600; }}
                 <th id="audit-th-data">{data_file}</th>
                 <th id="audit-th-sha">{sha256}</th>
                 <th id="audit-th-industry">{industry_file}</th>
+                <th id="audit-th-holiday">{holiday_file}</th>
               </tr>
             </thead>
             <tbody id="audit-markets"></tbody>
@@ -915,6 +922,7 @@ function applyLanguage(lang) {{
   document.getElementById('audit-th-data').textContent = text.data_file;
   document.getElementById('audit-th-sha').textContent = text.sha256;
   document.getElementById('audit-th-industry').textContent = text.industry_file;
+  document.getElementById('audit-th-holiday').textContent = text.holiday_file;
 
   setupFilters(text);
   renderKpis(text);
@@ -985,14 +993,20 @@ function renderAudit() {{
     const dataSha = shortSha(r.data_sha256 || '');
     const indFile = (r.industry_file || '');
     const indSha = shortSha(r.industry_sha256 || '');
+    const holFile = (r.holiday_file || '');
+    const holSha = shortSha(r.holiday_sha256 || '');
     const indCell = indFile
       ? (indFile + '<div class=\"sub\">' + indSha + '</div>')
+      : '<span class=\"sub\">-</span>';
+    const holCell = holFile
+      ? (holFile + '<div class=\"sub\">' + holSha + '</div>')
       : '<span class=\"sub\">-</span>';
     return '<tr>'
       + '<td>' + market + '</td>'
       + '<td class=\"sub\">' + dataFile + '</td>'
       + '<td class=\"sub\">' + dataSha + '</td>'
       + '<td class=\"sub\">' + indCell + '</td>'
+      + '<td class=\"sub\">' + holCell + '</td>'
       + '</tr>';
   }}).join('');
 }}
@@ -1061,6 +1075,8 @@ async function refreshFromFiles() {{
             data_sha256: (m.data_file && m.data_file.sha256) ? m.data_file.sha256 : '',
             industry_file: (m.industry_file && m.industry_file.path) ? m.industry_file.path : '',
             industry_sha256: (m.industry_file && m.industry_file.sha256) ? m.industry_file.sha256 : '',
+            holiday_file: (m.holiday_file && m.holiday_file.path) ? m.holiday_file.path : '',
+            holiday_sha256: (m.holiday_file && m.holiday_file.sha256) ? m.holiday_file.sha256 : '',
           }};
         }});
       }} catch (e) {{}}
@@ -1161,6 +1177,7 @@ refreshFromFiles();
         issues = text.issues,
         data_file = text.data_file,
         industry_file = text.industry_file,
+        holiday_file = text.holiday_file,
         sha256 = text.sha256,
         recent_trades = text.recent_trades,
         date = text.date,
@@ -1383,6 +1400,16 @@ fn read_audit_snapshot(path: &Path) -> (String, Vec<AuditMarketUi>) {
             .as_ref()
             .map(|f| f.sha256.clone())
             .unwrap_or_default();
+        let holiday_file = m
+            .holiday_file
+            .as_ref()
+            .map(|f| f.path.clone())
+            .unwrap_or_default();
+        let holiday_sha256 = m
+            .holiday_file
+            .as_ref()
+            .map(|f| f.sha256.clone())
+            .unwrap_or_default();
         out.push(AuditMarketUi {
             market: m.market,
             currency: m.currency,
@@ -1391,6 +1418,8 @@ fn read_audit_snapshot(path: &Path) -> (String, Vec<AuditMarketUi>) {
             data_sha256: m.data_file.sha256,
             industry_file,
             industry_sha256,
+            holiday_file,
+            holiday_sha256,
         });
     }
     out.sort_by(|a, b| a.market.cmp(&b.market));

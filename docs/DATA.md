@@ -68,6 +68,19 @@ If you run outside the covered dates, you should extend the holiday lists or rep
 
 The `validate-data` command also flags rows that fall on non-trading days (weekends/known holidays) as a `WARN`.
 
+### Custom Holiday Files (Per Market)
+
+You can extend the built-in holiday list per market using `markets.<M>.holiday_file` in `config/bot.toml`.
+
+Format: one date per line (`YYYY-MM-DD`). Blank lines and lines starting with `#` are ignored.
+
+Example:
+
+```toml
+[markets.US]
+holiday_file = "calendar/us_holidays.txt"
+```
+
 ## Reproducibility: Dataset Manifest
 
 You can generate a machine-readable manifest with file hashes and date ranges:

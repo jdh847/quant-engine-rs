@@ -1,10 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{anyhow, Context, Result};
+use chrono::NaiveDate;
 use serde::Deserialize;
 
 use crate::safety::{ensure_ibkr_paper_allowed, ensure_network_allowed};
@@ -251,6 +252,8 @@ pub struct RawMarketConfig {
     #[serde(default)]
     pub industry_file: Option<String>,
     #[serde(default)]
+    pub holiday_file: Option<String>,
+    #[serde(default)]
     pub commission_bps: Option<f64>,
     #[serde(default)]
     pub slippage_bps: Option<f64>,
@@ -271,6 +274,8 @@ pub struct MarketConfig {
     pub fx_to_base: f64,
     pub industry_file: Option<PathBuf>,
     pub industry_map: HashMap<String, String>,
+    pub holiday_file: Option<PathBuf>,
+    pub holiday_dates: HashSet<NaiveDate>,
     pub execution_cost: MarketExecutionCost,
 }
 
@@ -346,6 +351,13 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
         } else {
             HashMap::new()
         };
+        let holiday_file_path = market.holiday_file.as_ref().map(|p| project_root.join(p));
+        let holiday_dates = if let Some(holiday_file) = &holiday_file_path {
+            load_holiday_dates(holiday_file)
+                .with_context(|| format!("failed loading holiday file for market {name}"))?
+        } else {
+            HashSet::new()
+        };
 
         markets.insert(
             name.clone(),
@@ -359,6 +371,8 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
                 fx_to_base,
                 industry_file: industry_file_path,
                 industry_map,
+                holiday_file: holiday_file_path,
+                holiday_dates,
                 execution_cost,
             },
         );
@@ -411,6 +425,33 @@ fn load_industry_map(path: &Path) -> Result<HashMap<String, String>> {
         map.insert(symbol, industry);
     }
     Ok(map)
+}
+
+fn load_holiday_dates(path: &Path) -> Result<HashSet<NaiveDate>> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read holiday file failed: {}", path.display()))?;
+    let mut out = HashSet::new();
+    for (idx, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Allow either "YYYY-MM-DD" or "date,..." CSV style. Also tolerate a header line "date".
+        let first = line.split(',').next().unwrap_or("").trim();
+        if first.eq_ignore_ascii_case("date") {
+            continue;
+        }
+        let date = NaiveDate::parse_from_str(first, "%Y-%m-%d").with_context(|| {
+            format!(
+                "invalid holiday date at {}:{}: '{}'",
+                path.display(),
+                idx + 1,
+                first
+            )
+        })?;
+        out.insert(date);
+    }
+    Ok(out)
 }
 
 fn default_market_currency(market: &str) -> &'static str {

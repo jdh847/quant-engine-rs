@@ -35,6 +35,17 @@ impl ExchangeCalendar {
 
         true
     }
+
+    pub fn add_holidays(&mut self, market: &str, dates: &HashSet<NaiveDate>) {
+        if dates.is_empty() {
+            return;
+        }
+        let key = market.to_uppercase();
+        let set = self.holidays.entry(key).or_default();
+        for d in dates {
+            set.insert(*d);
+        }
+    }
 }
 
 fn us_holidays() -> HashSet<NaiveDate> {

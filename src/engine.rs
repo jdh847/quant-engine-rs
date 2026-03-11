@@ -4,6 +4,7 @@ use anyhow::Result;
 use chrono::NaiveDate;
 
 use crate::{
+    calendar::ExchangeCalendar,
     config::BotConfig,
     data::CsvDataPortal,
     execution::{build_broker, BrokerAdapter, ExecutionAdapter, PaperBroker},
@@ -40,8 +41,9 @@ impl QuantBotEngine<BrokerAdapter> {
             &cfg.start.base_currency,
         );
         let broker = build_broker(&cfg)?;
+        let rules = market_rules_from_config(&cfg);
 
-        Ok(Self::new(cfg, data, strategy, risk, broker))
+        Ok(Self::new(cfg, data, strategy, risk, rules, broker))
     }
 
     pub fn from_config_force_sim(cfg: BotConfig, data: CsvDataPortal) -> Self {
@@ -69,8 +71,9 @@ impl QuantBotEngine<BrokerAdapter> {
                 cfg.execution.min_fee,
             ),
         );
+        let rules = market_rules_from_config(&cfg);
 
-        Self::new(cfg, data, strategy, risk, broker)
+        Self::new(cfg, data, strategy, risk, rules, broker)
     }
 }
 
@@ -80,6 +83,7 @@ impl<E: ExecutionAdapter> QuantBotEngine<E> {
         data: CsvDataPortal,
         strategy: Box<dyn StrategyPlugin>,
         risk: UnifiedRiskManager,
+        market_rules: MarketRuleEngine,
         broker: E,
     ) -> Self {
         Self {
@@ -87,7 +91,7 @@ impl<E: ExecutionAdapter> QuantBotEngine<E> {
             data,
             strategy,
             risk,
-            market_rules: MarketRuleEngine::default(),
+            market_rules,
             broker,
         }
     }
@@ -195,6 +199,14 @@ impl<E: ExecutionAdapter> QuantBotEngine<E> {
 
         orders
     }
+}
+
+fn market_rules_from_config(cfg: &BotConfig) -> MarketRuleEngine {
+    let mut cal = ExchangeCalendar::new();
+    for market in cfg.markets.values() {
+        cal.add_holidays(&market.name, &market.holiday_dates);
+    }
+    MarketRuleEngine::new(cal)
 }
 
 fn industry_lookup(cfg: &BotConfig) -> HashMap<(String, String), String> {

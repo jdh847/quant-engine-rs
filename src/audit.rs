@@ -32,6 +32,7 @@ pub struct AuditMarketFile {
     pub fx_to_base: f64,
     pub data_file: AuditFileHash,
     pub industry_file: Option<AuditFileHash>,
+    pub holiday_file: Option<AuditFileHash>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,12 +82,17 @@ pub fn write_audit_snapshot(
             Some(p) => Some(file_hash(p)?),
             None => None,
         };
+        let holiday_file = match &m.holiday_file {
+            Some(p) => Some(file_hash(p)?),
+            None => None,
+        };
         markets.push(AuditMarketFile {
             market: m.name.clone(),
             currency: m.currency.clone(),
             fx_to_base: m.fx_to_base,
             data_file,
             industry_file,
+            holiday_file,
         });
     }
     markets.sort_by(|a, b| a.market.cmp(&b.market));

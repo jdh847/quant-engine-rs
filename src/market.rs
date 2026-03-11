@@ -33,13 +33,20 @@ impl MarketPolicy {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MarketRuleEngine {
     previous_closes: HashMap<PriceKey, f64>,
     calendar: ExchangeCalendar,
 }
 
 impl MarketRuleEngine {
+    pub fn new(calendar: ExchangeCalendar) -> Self {
+        Self {
+            previous_closes: HashMap::new(),
+            calendar,
+        }
+    }
+
     pub fn filter_orders<E: ExecutionAdapter>(
         &self,
         date: NaiveDate,
@@ -165,11 +172,18 @@ impl MarketRuleEngine {
     }
 }
 
+impl Default for MarketRuleEngine {
+    fn default() -> Self {
+        Self::new(ExchangeCalendar::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
 
     use crate::{
+        calendar::ExchangeCalendar,
         execution::PaperBroker,
         model::{Bar, Order, PriceMap, Side},
     };
@@ -235,6 +249,36 @@ mod tests {
         };
 
         let rules = MarketRuleEngine::default();
+        let (_accepted, rejected) = rules.filter_orders(date, &[bar], &[order], &broker);
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].reason.contains("holiday"));
+    }
+
+    #[test]
+    fn custom_holiday_file_dates_can_block_orders() {
+        let date = NaiveDate::from_ymd_opt(2025, 1, 2).expect("valid date");
+        let broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        let bar = Bar {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            close: 100.0,
+            volume: 1_000_000.0,
+        };
+
+        let mut cal = ExchangeCalendar::new();
+        let mut extras = std::collections::HashSet::new();
+        extras.insert(date);
+        cal.add_holidays("US", &extras);
+        let rules = MarketRuleEngine::new(cal);
+
         let (_accepted, rejected) = rules.filter_orders(date, &[bar], &[order], &broker);
         assert_eq!(rejected.len(), 1);
         assert!(rejected[0].reason.contains("holiday"));

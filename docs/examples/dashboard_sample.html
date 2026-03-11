@@ -159,14 +159,14 @@ profit_factor=3.5348
         </div>
         <div style="margin-top: 12px;">
           <h3 id="audit-title" style="margin:0 0 10px 0;">Audit</h3>
-          <div class="summary" id="audit-block">generated_at_utc=2026-03-11T14:03:42.923337+00:00
+          <div class="summary" id="audit-block">generated_at_utc=2026-03-11T14:11:25.665746+00:00
 command=run
 note=paper run
 end_equity=1011913.55
 pnl_ratio=1.1914%
 trades=23
 rejections=7
-config_sha256=bd0a18887fff520ed124dcbf0cc3c1fa647f779224fb293ec26032efd38cd79b
+config_sha256=1ca25749285b3c5290818fcf9d03f7b2665970ef1b1800cdb67a876345a908ad
 </div>
           <div class="sub" id="audit-hint" style="margin-top:8px;"></div>
           <table style="margin-top:10px;">
@@ -176,6 +176,7 @@ config_sha256=bd0a18887fff520ed124dcbf0cc3c1fa647f779224fb293ec26032efd38cd79b
                 <th id="audit-th-data">Data File</th>
                 <th id="audit-th-sha">SHA256</th>
                 <th id="audit-th-industry">Industry File</th>
+                <th id="audit-th-holiday">Holiday File</th>
               </tr>
             </thead>
             <tbody id="audit-markets"></tbody>
@@ -259,9 +260,9 @@ let rejections = [{"date":"2025-01-13","market":"US","symbol":"AAPL","side":"BUY
 let summaryKv = {"cagr":"15.2712%","calmar":"81.6000","daily_win_rate":"47.6190%","end_equity":"1011913.55","max_drawdown":"0.1871%","pnl":"11913.55","pnl_ratio":"1.1914%","profit_factor":"3.5348","rejections":"7","sharpe":"7.6714","sortino":"13.8849","start_equity":"1000000.00","trades":"23"};
 let factorKv = {"avg_composite_alpha":"-0.000000","avg_factor_low_vol":"0.250000","avg_factor_mean_reversion":"0.200000","avg_factor_momentum":"0.450000","avg_factor_volume":"0.100000","avg_selected_symbols":"2.00","rows":"38","share_factor_low_vol":"25.00%","share_factor_mean_reversion":"20.00%","share_factor_momentum":"45.00%","share_factor_volume":"10.00%"};
 let dataQualityRows = [{"market":"A","rows":38,"unique_symbols":2,"duplicate_rows":0,"invalid_close_rows":0,"invalid_volume_rows":0,"date_order_violations":0,"return_outliers":0,"large_gaps":0,"non_trading_day_rows":2,"status":"WARN","issues":"non_trading=2"},{"market":"JP","rows":32,"unique_symbols":2,"duplicate_rows":0,"invalid_close_rows":0,"invalid_volume_rows":0,"date_order_violations":0,"return_outliers":0,"large_gaps":0,"non_trading_day_rows":0,"status":"PASS","issues":""},{"market":"US","rows":42,"unique_symbols":2,"duplicate_rows":0,"invalid_close_rows":0,"invalid_volume_rows":0,"date_order_violations":0,"return_outliers":0,"large_gaps":0,"non_trading_day_rows":0,"status":"PASS","issues":""}];
-let auditMarkets = [{"market":"A","currency":"CNY","fx_to_base":0.14,"data_file":"/Users/chocolate/Documents/New project/data/a_share.csv","data_sha256":"3101e01edaa150cd2a9bcecbcd327bdb0a33908632d2b636fe00294609db648d","industry_file":"/Users/chocolate/Documents/New project/data/a_industries.csv","industry_sha256":"dae26e7ce7c9ad2564c850c4a587aff1ca854b632c84efb965d4e32026259dfb"},{"market":"JP","currency":"JPY","fx_to_base":0.0068,"data_file":"/Users/chocolate/Documents/New project/data/jp_equities.csv","data_sha256":"46ad99739ad4a152db1fa9f2c0de65a7171b391ced3234f267bab14520d5effc","industry_file":"/Users/chocolate/Documents/New project/data/jp_industries.csv","industry_sha256":"eb8cdaf71719d544f7c85e3731450a76fa9ab5041cd42450b7c2ba1610493f6a"},{"market":"US","currency":"USD","fx_to_base":1.0,"data_file":"/Users/chocolate/Documents/New project/data/us_equities.csv","data_sha256":"5b0f8cceefdf445874a20815fd35bb382920819dc654fc9d22b425ed06dab5ff","industry_file":"/Users/chocolate/Documents/New project/data/us_industries.csv","industry_sha256":"ee10487f19eff181d354362722cfb716261de284ac467c1e2057b3af80b4bd68"}];
-let auditConfigSha = "bd0a18887fff520ed124dcbf0cc3c1fa647f779224fb293ec26032efd38cd79b";
-const i18n = {"en":{"title":"Private Quant Bot","subtitle":"Paper Trading Dashboard (Rust)","generated_from":"Generated from local outputs","overview":"Overview","series":"Series","equity":"Equity","cash":"Cash","gross_exposure":"Gross Exposure","net_exposure":"Net Exposure","equity_curve":"Equity Curve","run_summary":"Run Summary","audit":"Audit","data_quality":"Data Quality","status":"Status","rows":"Rows","issues":"Issues","data_file":"Data File","industry_file":"Industry File","sha256":"SHA256","kpi_start_equity":"Start Equity","kpi_end_equity":"End Equity","kpi_pnl":"PnL","kpi_pnl_ratio":"PnL %","kpi_max_drawdown":"Max DD","kpi_cagr":"CAGR","kpi_sharpe":"Sharpe","kpi_trades":"Trades","kpi_rejections":"Rejections","recent_trades":"Recent Trades","filters":"Filters","all":"All","search":"Search","date":"Date","market":"Market","symbol":"Symbol","side":"Side","qty":"Qty","price":"Price","fees":"Fees","rejections":"Rejections","reason":"Reason","factors":"Factors","avg_selected_symbols":"Avg Selected","start":"Start","end":"End","buy":"BUY","sell":"SELL","live_on":"Live refresh: on","live_fallback":"Live refresh: fallback","live_init":"Live refresh: init"},"zh-CN":{"title":"私人量化机器人","subtitle":"模拟盘仪表盘（Rust）","generated_from":"由本地输出自动生成","overview":"总览","series":"序列","equity":"权益","cash":"现金","gross_exposure":"总敞口","net_exposure":"净敞口","equity_curve":"权益曲线","run_summary":"运行摘要","audit":"审计","data_quality":"数据质量","status":"状态","rows":"行数","issues":"问题","data_file":"数据文件","industry_file":"行业文件","sha256":"SHA256","kpi_start_equity":"起始权益","kpi_end_equity":"结束权益","kpi_pnl":"盈亏","kpi_pnl_ratio":"收益率","kpi_max_drawdown":"最大回撤","kpi_cagr":"CAGR","kpi_sharpe":"夏普","kpi_trades":"成交数","kpi_rejections":"拒单数","recent_trades":"最近成交","filters":"筛选","all":"全部","search":"搜索","date":"日期","market":"市场","symbol":"代码","side":"方向","qty":"数量","price":"价格","fees":"费用","rejections":"拒单","reason":"原因","factors":"因子","avg_selected_symbols":"平均入选数","start":"起始","end":"结束","buy":"买入","sell":"卖出","live_on":"实时刷新: 开","live_fallback":"实时刷新: 回退","live_init":"实时刷新: 初始化"},"ja":{"title":"プライベート量的ボット","subtitle":"ペーパー取引ダッシュボード（Rust）","generated_from":"ローカル出力から生成","overview":"概要","series":"系列","equity":"エクイティ","cash":"現金","gross_exposure":"総エクスポージャー","net_exposure":"純エクスポージャー","equity_curve":"エクイティ曲線","run_summary":"実行サマリー","audit":"監査","data_quality":"データ品質","status":"状態","rows":"行数","issues":"問題","data_file":"データファイル","industry_file":"業種ファイル","sha256":"SHA256","kpi_start_equity":"開始エクイティ","kpi_end_equity":"終了エクイティ","kpi_pnl":"損益","kpi_pnl_ratio":"リターン","kpi_max_drawdown":"最大DD","kpi_cagr":"CAGR","kpi_sharpe":"シャープ","kpi_trades":"約定数","kpi_rejections":"拒否数","recent_trades":"最近の約定","filters":"フィルター","all":"すべて","search":"検索","date":"日付","market":"市場","symbol":"銘柄","side":"売買","qty":"数量","price":"価格","fees":"手数料","rejections":"拒否","reason":"理由","factors":"ファクター","avg_selected_symbols":"平均採用数","start":"開始","end":"終了","buy":"買い","sell":"売り","live_on":"ライブ更新: ON","live_fallback":"ライブ更新: fallback","live_init":"ライブ更新: init"}};
+let auditMarkets = [{"market":"A","currency":"CNY","fx_to_base":0.14,"data_file":"/Users/chocolate/Documents/New project/data/a_share.csv","data_sha256":"3101e01edaa150cd2a9bcecbcd327bdb0a33908632d2b636fe00294609db648d","industry_file":"/Users/chocolate/Documents/New project/data/a_industries.csv","industry_sha256":"dae26e7ce7c9ad2564c850c4a587aff1ca854b632c84efb965d4e32026259dfb","holiday_file":"","holiday_sha256":""},{"market":"JP","currency":"JPY","fx_to_base":0.0068,"data_file":"/Users/chocolate/Documents/New project/data/jp_equities.csv","data_sha256":"46ad99739ad4a152db1fa9f2c0de65a7171b391ced3234f267bab14520d5effc","industry_file":"/Users/chocolate/Documents/New project/data/jp_industries.csv","industry_sha256":"eb8cdaf71719d544f7c85e3731450a76fa9ab5041cd42450b7c2ba1610493f6a","holiday_file":"","holiday_sha256":""},{"market":"US","currency":"USD","fx_to_base":1.0,"data_file":"/Users/chocolate/Documents/New project/data/us_equities.csv","data_sha256":"5b0f8cceefdf445874a20815fd35bb382920819dc654fc9d22b425ed06dab5ff","industry_file":"/Users/chocolate/Documents/New project/data/us_industries.csv","industry_sha256":"ee10487f19eff181d354362722cfb716261de284ac467c1e2057b3af80b4bd68","holiday_file":"","holiday_sha256":""}];
+let auditConfigSha = "1ca25749285b3c5290818fcf9d03f7b2665970ef1b1800cdb67a876345a908ad";
+const i18n = {"en":{"title":"Private Quant Bot","subtitle":"Paper Trading Dashboard (Rust)","generated_from":"Generated from local outputs","overview":"Overview","series":"Series","equity":"Equity","cash":"Cash","gross_exposure":"Gross Exposure","net_exposure":"Net Exposure","equity_curve":"Equity Curve","run_summary":"Run Summary","audit":"Audit","data_quality":"Data Quality","status":"Status","rows":"Rows","issues":"Issues","data_file":"Data File","industry_file":"Industry File","holiday_file":"Holiday File","sha256":"SHA256","kpi_start_equity":"Start Equity","kpi_end_equity":"End Equity","kpi_pnl":"PnL","kpi_pnl_ratio":"PnL %","kpi_max_drawdown":"Max DD","kpi_cagr":"CAGR","kpi_sharpe":"Sharpe","kpi_trades":"Trades","kpi_rejections":"Rejections","recent_trades":"Recent Trades","filters":"Filters","all":"All","search":"Search","date":"Date","market":"Market","symbol":"Symbol","side":"Side","qty":"Qty","price":"Price","fees":"Fees","rejections":"Rejections","reason":"Reason","factors":"Factors","avg_selected_symbols":"Avg Selected","start":"Start","end":"End","buy":"BUY","sell":"SELL","live_on":"Live refresh: on","live_fallback":"Live refresh: fallback","live_init":"Live refresh: init"},"zh-CN":{"title":"私人量化机器人","subtitle":"模拟盘仪表盘（Rust）","generated_from":"由本地输出自动生成","overview":"总览","series":"序列","equity":"权益","cash":"现金","gross_exposure":"总敞口","net_exposure":"净敞口","equity_curve":"权益曲线","run_summary":"运行摘要","audit":"审计","data_quality":"数据质量","status":"状态","rows":"行数","issues":"问题","data_file":"数据文件","industry_file":"行业文件","holiday_file":"假期文件","sha256":"SHA256","kpi_start_equity":"起始权益","kpi_end_equity":"结束权益","kpi_pnl":"盈亏","kpi_pnl_ratio":"收益率","kpi_max_drawdown":"最大回撤","kpi_cagr":"CAGR","kpi_sharpe":"夏普","kpi_trades":"成交数","kpi_rejections":"拒单数","recent_trades":"最近成交","filters":"筛选","all":"全部","search":"搜索","date":"日期","market":"市场","symbol":"代码","side":"方向","qty":"数量","price":"价格","fees":"费用","rejections":"拒单","reason":"原因","factors":"因子","avg_selected_symbols":"平均入选数","start":"起始","end":"结束","buy":"买入","sell":"卖出","live_on":"实时刷新: 开","live_fallback":"实时刷新: 回退","live_init":"实时刷新: 初始化"},"ja":{"title":"プライベート量的ボット","subtitle":"ペーパー取引ダッシュボード（Rust）","generated_from":"ローカル出力から生成","overview":"概要","series":"系列","equity":"エクイティ","cash":"現金","gross_exposure":"総エクスポージャー","net_exposure":"純エクスポージャー","equity_curve":"エクイティ曲線","run_summary":"実行サマリー","audit":"監査","data_quality":"データ品質","status":"状態","rows":"行数","issues":"問題","data_file":"データファイル","industry_file":"業種ファイル","holiday_file":"休日ファイル","sha256":"SHA256","kpi_start_equity":"開始エクイティ","kpi_end_equity":"終了エクイティ","kpi_pnl":"損益","kpi_pnl_ratio":"リターン","kpi_max_drawdown":"最大DD","kpi_cagr":"CAGR","kpi_sharpe":"シャープ","kpi_trades":"約定数","kpi_rejections":"拒否数","recent_trades":"最近の約定","filters":"フィルター","all":"すべて","search":"検索","date":"日付","market":"市場","symbol":"銘柄","side":"売買","qty":"数量","price":"価格","fees":"手数料","rejections":"拒否","reason":"理由","factors":"ファクター","avg_selected_symbols":"平均採用数","start":"開始","end":"終了","buy":"買い","sell":"売り","live_on":"ライブ更新: ON","live_fallback":"ライブ更新: fallback","live_init":"ライブ更新: init"}};
 const defaultLang = "en";
 
 const c = document.getElementById('chart');
@@ -644,6 +645,7 @@ function applyLanguage(lang) {
   document.getElementById('audit-th-data').textContent = text.data_file;
   document.getElementById('audit-th-sha').textContent = text.sha256;
   document.getElementById('audit-th-industry').textContent = text.industry_file;
+  document.getElementById('audit-th-holiday').textContent = text.holiday_file;
 
   setupFilters(text);
   renderKpis(text);
@@ -714,14 +716,20 @@ function renderAudit() {
     const dataSha = shortSha(r.data_sha256 || '');
     const indFile = (r.industry_file || '');
     const indSha = shortSha(r.industry_sha256 || '');
+    const holFile = (r.holiday_file || '');
+    const holSha = shortSha(r.holiday_sha256 || '');
     const indCell = indFile
       ? (indFile + '<div class=\"sub\">' + indSha + '</div>')
+      : '<span class=\"sub\">-</span>';
+    const holCell = holFile
+      ? (holFile + '<div class=\"sub\">' + holSha + '</div>')
       : '<span class=\"sub\">-</span>';
     return '<tr>'
       + '<td>' + market + '</td>'
       + '<td class=\"sub\">' + dataFile + '</td>'
       + '<td class=\"sub\">' + dataSha + '</td>'
       + '<td class=\"sub\">' + indCell + '</td>'
+      + '<td class=\"sub\">' + holCell + '</td>'
       + '</tr>';
   }).join('');
 }
@@ -790,6 +798,8 @@ async function refreshFromFiles() {
             data_sha256: (m.data_file && m.data_file.sha256) ? m.data_file.sha256 : '',
             industry_file: (m.industry_file && m.industry_file.path) ? m.industry_file.path : '',
             industry_sha256: (m.industry_file && m.industry_file.sha256) ? m.industry_file.sha256 : '',
+            holiday_file: (m.holiday_file && m.holiday_file.path) ? m.holiday_file.path : '',
+            holiday_sha256: (m.holiday_file && m.holiday_file.sha256) ? m.holiday_file.sha256 : '',
           };
         });
       } catch (e) {}

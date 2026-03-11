@@ -60,12 +60,17 @@ pub fn run_data_quality_check(
     }
 
     let mut rows = Vec::new();
+    let mut cal = ExchangeCalendar::new();
+    for market in cfg.markets.values() {
+        cal.add_holidays(&market.name, &market.holiday_dates);
+    }
     for market in cfg.markets.values() {
         let row = inspect_market_csv(
             &market.name,
             &market.data_file,
             request.return_outlier_threshold,
             request.gap_days_threshold,
+            &cal,
         )?;
         rows.push(row);
     }
@@ -80,6 +85,7 @@ fn inspect_market_csv(
     path: &Path,
     outlier_threshold: f64,
     gap_days_threshold: i64,
+    cal: &ExchangeCalendar,
 ) -> Result<DataQualityRow> {
     let mut rdr = csv::Reader::from_path(path)
         .with_context(|| format!("open market csv failed: {}", path.display()))?;
@@ -97,8 +103,6 @@ fn inspect_market_csv(
     let mut return_outliers = 0usize;
     let mut large_gaps = 0usize;
     let mut non_trading_day_rows = 0usize;
-
-    let cal = ExchangeCalendar::new();
 
     for record in rdr.deserialize::<CsvBar>() {
         let record = record.with_context(|| format!("parse csv row failed: {}", path.display()))?;
@@ -260,7 +264,8 @@ mod tests {
         )
         .expect("write csv");
 
-        let row = inspect_market_csv("US", &csv_path, 0.35, 10).expect("inspect");
+        let cal = crate::calendar::ExchangeCalendar::new();
+        let row = inspect_market_csv("US", &csv_path, 0.35, 10, &cal).expect("inspect");
         assert_eq!(row.non_trading_day_rows, 1);
         assert_eq!(row.status, "WARN");
     }
