@@ -1,0 +1,105 @@
+[start]
+starting_capital = 1000000
+base_currency = "USD"
+
+[strategy]
+# Inspired by Rust quant repos: momentum + trend filter + volatility-adjusted ranking
+strategy_plugin = "layered_multi_factor" # layered_multi_factor | momentum_guard
+short_window = 3
+long_window = 7
+vol_window = 5
+top_n = 2
+min_momentum = -0.01
+mean_reversion_window = 3
+volume_window = 5
+factor_momentum_weight = 0.45
+factor_mean_reversion_weight = 0.20
+factor_low_vol_weight = 0.25
+factor_volume_weight = 0.10
+risk_parity_blend = 0.60
+max_turnover_ratio = 0.35
+portfolio_method = "hrp" # risk_parity | hrp
+hrp_lookback = 20
+winsorize_pct = 0.05
+layer1_select_ratio = 0.60
+industry_neutral_strength = 1.0
+regime_vol_window = 8
+regime_target_vol = 0.02
+regime_floor_scale = 0.35
+regime_ceiling_scale = 1.10
+
+[risk]
+max_gross_exposure_ratio = 0.95
+max_symbol_weight = 0.30
+daily_loss_limit_ratio = 0.02
+
+[risk.currency_max_net_exposure_ratio]
+USD = 0.90
+CNY = 0.45
+JPY = 0.35
+
+[execution]
+commission_bps = 1.5
+slippage_bps = 3.0
+sell_tax_bps = 0.0
+min_fee = 1.0
+
+[fx]
+live_enabled = false
+provider_url = "https://api.frankfurter.app/latest"
+timeout_ms = 1500
+refresh_interval_days = 1
+failure_cooldown_days = 3
+
+[broker]
+# sim | ibkr_paper
+mode = "sim"
+paper_only = true
+
+[ibkr]
+enabled = false
+gateway_url = "https://127.0.0.1:5000/v1/api"
+account_id = ""
+dry_run = true
+mirror_log = "outputs_rust/ibkr_mirror_orders.jsonl"
+lifecycle_log = "outputs_rust/ibkr_lifecycle_events.jsonl"
+auto_reconcile = true
+auto_cancel_stale = true
+allow_remote_paper = false
+
+[markets.US]
+allocation = 0.50
+data_file = "data/us_equities.csv"
+lot_size = 1
+min_trade_notional = 1000
+currency = "USD"
+fx_to_base = 1.0
+industry_file = "data/us_industries.csv"
+commission_bps = 0.8
+slippage_bps = 2.0
+min_fee = 1.0
+
+[markets.A]
+allocation = 0.30
+data_file = "data/a_share.csv"
+lot_size = 100
+min_trade_notional = 10000
+currency = "CNY"
+fx_to_base = 0.14
+industry_file = "data/a_industries.csv"
+commission_bps = 2.5
+slippage_bps = 5.0
+sell_tax_bps = 10.0
+min_fee = 5.0
+
+[markets.JP]
+allocation = 0.20
+data_file = "data/jp_equities.csv"
+lot_size = 100
+min_trade_notional = 100000
+currency = "JPY"
+fx_to_base = 0.0068
+industry_file = "data/jp_industries.csv"
+commission_bps = 1.2
+slippage_bps = 3.0
+min_fee = 80.0

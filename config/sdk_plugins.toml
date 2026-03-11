@@ -1,0 +1,7 @@
+[[plugins]]
+plugin_id = "my_alpha"
+name = "My Alpha"
+description = "Layered multi-factor SDK"
+enabled = true
+min_price = 1.0
+alpha_volume_scale = 0.00001

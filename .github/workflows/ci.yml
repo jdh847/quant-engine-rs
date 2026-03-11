@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "codex/**"]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all
+
+      - name: Smoke Run
+        run: |
+          cargo run -- run --config config/bot.toml --output-dir outputs_rust_ci
+          test -f outputs_rust_ci/factor_attribution.csv
+          test -f outputs_rust_ci/factor_attribution_summary.txt
+
+      - name: Smoke Plugin Override
+        run: cargo run -- run --config config/bot.toml --output-dir outputs_rust_ci_momentum --strategy-plugin momentum_guard
+
+      - name: Smoke Run Registry
+        run: |
+          cargo run -- registry --output-dir outputs_rust_ci --top 5
+          test -f outputs_rust_ci/run_registry.csv
+          test -f outputs_rust_ci/run_registry.json
+          test -f outputs_rust_ci/run_registry_top.md
+
+      - name: Smoke Control Center
+        run: |
+          cargo run -- control-center --output-dir outputs_rust_ci --refresh-secs 0 --cycles 1
+
+      - name: Smoke Public Leaderboard
+        run: |
+          cargo run -- leaderboard --output-dir outputs_rust_ci --top 20
+          test -f outputs_rust_ci/leaderboard/leaderboard_public.csv
+          test -f outputs_rust_ci/leaderboard/leaderboard_public.md
+          test -f outputs_rust_ci/leaderboard/leaderboard_public.html
+
+      - name: Smoke Plugin Catalog
+        run: |
+          cargo run -- plugins
+
+      - name: Smoke Plugin Scaffold
+        run: |
+          cargo run -- scaffold-plugin --id ci_alpha --output-dir outputs_rust_ci/scaffold --force
+          test -f outputs_rust_ci/scaffold/ci_alpha.rs
+          test -f outputs_rust_ci/scaffold/ci_alpha_README.md
+
+      - name: Smoke SDK Init and Check
+        run: |
+          cargo run -- sdk-init --id ci_alpha_sdk --output-dir outputs_rust_ci/plugins_sdk --force
+          cargo run -- sdk-check --package-dir outputs_rust_ci/plugins_sdk/ci_alpha_sdk
+          cargo run -- sdk-register --package-dir outputs_rust_ci/plugins_sdk/ci_alpha_sdk --name "CI Alpha SDK"
+          cargo run -- run --config config/bot.toml --output-dir outputs_rust_ci_sdk_run --strategy-plugin ci_alpha_sdk
+          test -f outputs_rust_ci/plugins_sdk/ci_alpha_sdk/Cargo.toml
+          test -f outputs_rust_ci/plugins_sdk/ci_alpha_sdk/src/lib.rs
+          test -f outputs_rust_ci/plugins_sdk/ci_alpha_sdk/plugin.toml
+
+      - name: Smoke Dashboard i18n
+        run: |
+          cargo run -- dashboard --output-dir outputs_rust_ci --lang zh
+          cargo run -- dashboard --output-dir outputs_rust_ci --lang ja
+          grep -q '<html lang="ja">' outputs_rust_ci/dashboard.html
+          grep -q 'id="lang-switch"' outputs_rust_ci/dashboard.html
+          grep -q 'id="live-status"' outputs_rust_ci/dashboard.html
+
+      - name: Smoke Benchmark Matrix
+        run: |
+          cargo run -- benchmark --config config/bot.toml --output-dir outputs_rust_ci_benchmark --strategy-plugins layered_multi_factor,momentum_guard --portfolio-methods risk_parity,hrp
+
+      - name: Smoke Robustness
+        run: |
+          cargo run -- robustness --config config/bot.toml --output-dir outputs_rust_ci_robustness --train-days 10 --test-days 4 --short-windows 3 --long-windows 7 --vol-windows 5 --top-ns 1 --min-momentums=0.0 --strategy-plugins layered_multi_factor,momentum_guard --portfolio-methods risk_parity,hrp
+
+      - name: Smoke Data Quality
+        run: |
+          cargo run -- validate-data --config config/bot.toml --output-dir outputs_rust_ci_data_quality --return-outlier-threshold 0.35 --gap-days-threshold 10
+
+      - name: Smoke Paper Daemon
+        run: |
+          cargo run -- paper-daemon --config config/bot.toml --output-dir outputs_rust_ci_daemon --cycles 1 --sleep-secs 0 --alert-drawdown-ratio 0.03

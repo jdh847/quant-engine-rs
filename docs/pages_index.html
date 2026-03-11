@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Private Quant Bot Research Site</title>
+<style>
+body { margin: 0; font-family: "Avenir Next", "Segoe UI", sans-serif; background: linear-gradient(160deg,#f8fafc 0%,#ecfeff 60%,#f0fdf4 100%); color: #0f172a; }
+.wrap { max-width: 1080px; margin: 36px auto; padding: 0 18px; }
+.panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+h1 { margin: 0 0 8px 0; font-size: 30px; }
+h2 { margin: 0 0 10px 0; font-size: 20px; }
+p { color: #475569; margin-top: 0; }
+a { color: #0f766e; text-decoration: none; font-weight: 600; }
+a:hover { text-decoration: underline; }
+ul { margin: 8px 0; padding-left: 18px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px 8px; background: #fff; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; border-bottom: 1px solid #eef2f7; padding: 8px; }
+th { color: #475569; }
+.muted { color: #64748b; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Private Quant Bot</h1>
+    <p>Auto-published paper-trading and cross-market research artifacts.</p>
+
+    <section class="panel">
+      <h2>Paper Run</h2>
+      <ul>
+        <li><a href="./run/dashboard.html">Dashboard (EN/ZH/JA switchable)</a></li>
+        <li><a href="./run/summary.txt">Summary</a></li>
+        <li><a href="./run/equity_curve.csv">Equity Curve CSV</a></li>
+        <li><a href="./run/trades.csv">Trades CSV</a></li>
+        <li><a href="./run/factor_attribution.csv">Factor Attribution CSV</a></li>
+        <li><a href="./run/factor_attribution_summary.txt">Factor Attribution Summary</a></li>
+        <li><a href="./run/run_registry.csv">Run Registry CSV</a></li>
+        <li><a href="./run/run_registry.json">Run Registry JSON</a></li>
+        <li><a href="./run/run_registry_top.md">Run Registry Top (Markdown)</a></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Research Files</h2>
+      <ul>
+        <li><a href="./research/research_leaderboard.csv">Research Leaderboard CSV</a></li>
+        <li><a href="./research/research_leaderboard.md">Research Leaderboard Markdown</a></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Benchmark Files</h2>
+      <ul>
+        <li><a href="./benchmark/baseline_results.csv">Benchmark Matrix CSV</a></li>
+        <li><a href="./benchmark/baseline_report.md">Benchmark Matrix Markdown</a></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Public Leaderboard</h2>
+      <ul>
+        <li><a href="./leaderboard/leaderboard_public.html">Leaderboard HTML</a></li>
+        <li><a href="./leaderboard/leaderboard_public.csv">Leaderboard CSV</a></li>
+        <li><a href="./leaderboard/leaderboard_public.md">Leaderboard Markdown</a></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Robustness & Data Quality</h2>
+      <ul>
+        <li><a href="./robustness/robustness_folds.csv">Robustness Folds CSV</a></li>
+        <li><a href="./robustness/robustness_summary.txt">Robustness Summary</a></li>
+        <li><a href="./data_quality/data_quality_report.csv">Data Quality Report CSV</a></li>
+        <li><a href="./data_quality/data_quality_summary.txt">Data Quality Summary</a></li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Benchmark Explorer</h2>
+      <div class="toolbar">
+        <select id="bm-scenario"></select>
+        <select id="bm-plugin"></select>
+        <select id="bm-method"></select>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th><th>Scenario</th><th>Plugin</th><th>Method</th><th>Score</th><th>PnL</th><th>MaxDD</th><th>Sharpe</th>
+          </tr>
+        </thead>
+        <tbody id="bm-body"></tbody>
+      </table>
+      <div id="bm-status" class="muted"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Research Explorer</h2>
+      <div class="toolbar">
+        <select id="rs-scenario"></select>
+        <select id="rs-plugin"></select>
+        <select id="rs-method"></select>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th><th>Scenario</th><th>Plugin</th><th>Method</th><th>Score</th><th>PnL</th><th>MaxDD</th><th>Sharpe</th>
+          </tr>
+        </thead>
+        <tbody id="rs-body"></tbody>
+      </table>
+      <div id="rs-status" class="muted"></div>
+    </section>
+  </div>
+
+<script>
+function parseCsv(text) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",");
+  return lines.slice(1).map((line) => {
+    const cols = line.split(",");
+    const row = {};
+    headers.forEach((h, i) => { row[h] = cols[i] ?? ""; });
+    return row;
+  });
+}
+
+function populateSelect(select, values) {
+  select.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "ALL";
+  all.textContent = "ALL";
+  select.appendChild(all);
+  values.forEach((v) => {
+    const option = document.createElement("option");
+    option.value = v;
+    option.textContent = v;
+    select.appendChild(option);
+  });
+}
+
+function uniqueSorted(rows, key) {
+  return [...new Set(rows.map((r) => r[key]).filter(Boolean))].sort();
+}
+
+function pct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  return (n * 100).toFixed(2) + "%";
+}
+
+function num(value, digits = 4) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  return n.toFixed(digits);
+}
+
+function renderRows(target, rows) {
+  target.innerHTML = "";
+  rows.slice(0, 30).forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.rank}</td><td>${r.scenario}</td><td>${r.strategy_plugin}</td><td>${r.portfolio_method}</td><td>${num(r.score)}</td><td>${pct(r.pnl_ratio)}</td><td>${pct(r.max_drawdown)}</td><td>${num(r.sharpe, 3)}</td>`;
+    target.appendChild(tr);
+  });
+}
+
+function bindExplorer(rows, ids, statusId) {
+  const scenario = document.getElementById(ids.scenario);
+  const plugin = document.getElementById(ids.plugin);
+  const method = document.getElementById(ids.method);
+  const body = document.getElementById(ids.body);
+  const status = document.getElementById(statusId);
+
+  populateSelect(scenario, uniqueSorted(rows, "scenario"));
+  populateSelect(plugin, uniqueSorted(rows, "strategy_plugin"));
+  populateSelect(method, uniqueSorted(rows, "portfolio_method"));
+
+  function apply() {
+    const filtered = rows.filter((r) => {
+      const scenarioOk = scenario.value === "ALL" || r.scenario === scenario.value;
+      const pluginOk = plugin.value === "ALL" || r.strategy_plugin === plugin.value;
+      const methodOk = method.value === "ALL" || r.portfolio_method === method.value;
+      return scenarioOk && pluginOk && methodOk;
+    }).sort((a, b) => Number(b.score) - Number(a.score));
+    renderRows(body, filtered);
+    status.textContent = `rows: ${filtered.length}`;
+  }
+
+  scenario.addEventListener("change", apply);
+  plugin.addEventListener("change", apply);
+  method.addEventListener("change", apply);
+  apply();
+}
+
+async function loadAndBind(path, ids, statusId) {
+  const status = document.getElementById(statusId);
+  try {
+    const text = await fetch(path).then((r) => r.text());
+    const rows = parseCsv(text);
+    if (!rows.length) {
+      status.textContent = "no rows";
+      return;
+    }
+    bindExplorer(rows, ids, statusId);
+  } catch (err) {
+    status.textContent = `failed to load ${path}`;
+  }
+}
+
+loadAndBind("./benchmark/baseline_results.csv", {
+  scenario: "bm-scenario",
+  plugin: "bm-plugin",
+  method: "bm-method",
+  body: "bm-body",
+}, "bm-status");
+
+loadAndBind("./research/research_leaderboard.csv", {
+  scenario: "rs-scenario",
+  plugin: "rs-plugin",
+  method: "rs-method",
+  body: "rs-body",
+}, "rs-status");
+</script>
+</body>
+</html>

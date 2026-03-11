@@ -1,0 +1,118 @@
+name: Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Paper Run Artifacts
+        run: cargo run -- run --config config/bot.toml --output-dir outputs_pages --lang en
+
+      - name: Build Cross-Market Research
+        run: |
+          cargo run -- research \
+            --config config/bot.toml \
+            --output-dir outputs_pages/research \
+            --markets US,A,JP \
+            --short-windows 3,4,5 \
+            --long-windows 7,9,11 \
+            --vol-windows 5,7 \
+            --top-ns 1,2 \
+            --min-momentums=-0.01,0.0,0.01 \
+            --strategy-plugins layered_multi_factor,momentum_guard \
+            --portfolio-methods risk_parity,hrp
+
+      - name: Build Benchmark Matrix
+        run: |
+          cargo run -- benchmark \
+            --config config/bot.toml \
+            --output-dir outputs_pages/benchmark \
+            --strategy-plugins layered_multi_factor,momentum_guard \
+            --portfolio-methods risk_parity,hrp
+
+      - name: Build Robustness and Data Quality
+        run: |
+          cargo run -- robustness \
+            --config config/bot.toml \
+            --output-dir outputs_pages/robustness \
+            --train-days 10 \
+            --test-days 4 \
+            --short-windows 3 \
+            --long-windows 7 \
+            --vol-windows 5 \
+            --top-ns 1 \
+            --min-momentums=0.0 \
+            --strategy-plugins layered_multi_factor,momentum_guard \
+            --portfolio-methods risk_parity,hrp
+          cargo run -- validate-data \
+            --config config/bot.toml \
+            --output-dir outputs_pages/data_quality \
+            --return-outlier-threshold 0.35 \
+            --gap-days-threshold 10
+
+      - name: Build Public Leaderboard
+        run: |
+          cargo run -- leaderboard --output-dir outputs_pages --top 50
+
+      - name: Prepare Site
+        run: |
+          mkdir -p site/run site/research site/benchmark site/robustness site/data_quality site/leaderboard
+          cp outputs_pages/dashboard.html site/run/dashboard.html
+          cp outputs_pages/summary.txt site/run/summary.txt
+          cp outputs_pages/equity_curve.csv site/run/equity_curve.csv
+          cp outputs_pages/trades.csv site/run/trades.csv
+          cp outputs_pages/factor_attribution.csv site/run/factor_attribution.csv
+          cp outputs_pages/factor_attribution_summary.txt site/run/factor_attribution_summary.txt
+          cp outputs_pages/run_registry.csv site/run/run_registry.csv
+          cp outputs_pages/run_registry.json site/run/run_registry.json
+          cp outputs_pages/run_registry_top.md site/run/run_registry_top.md
+          cp outputs_pages/leaderboard/leaderboard_public.csv site/leaderboard/leaderboard_public.csv
+          cp outputs_pages/leaderboard/leaderboard_public.md site/leaderboard/leaderboard_public.md
+          cp outputs_pages/leaderboard/leaderboard_public.html site/leaderboard/leaderboard_public.html
+          cp outputs_pages/research/research_leaderboard.csv site/research/research_leaderboard.csv
+          cp outputs_pages/research/research_leaderboard.md site/research/research_leaderboard.md
+          cp outputs_pages/benchmark/baseline_results.csv site/benchmark/baseline_results.csv
+          cp outputs_pages/benchmark/baseline_report.md site/benchmark/baseline_report.md
+          cp outputs_pages/robustness/robustness_folds.csv site/robustness/robustness_folds.csv
+          cp outputs_pages/robustness/robustness_summary.txt site/robustness/robustness_summary.txt
+          cp outputs_pages/data_quality/data_quality_report.csv site/data_quality/data_quality_report.csv
+          cp outputs_pages/data_quality/data_quality_summary.txt site/data_quality/data_quality_summary.txt
+          cp docs/pages_index.html site/index.html
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,12 @@
+[package]
+name = "my_alpha_sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Strategy plugin SDK crate for private_quant_bot"
+
+[lib]
+name = "my_alpha_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+private_quant_bot = { path = "../.." }

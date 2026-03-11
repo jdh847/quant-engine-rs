@@ -1,0 +1,5 @@
+plugin_id = "my_alpha"
+sdk_version = "0.1.0"
+created_at_utc = "2026-03-04T14:09:10.206667+00:00"
+factory_fn = "build_plugin"
+runtime_trait = "private_quant_bot::strategy::StrategyPlugin"

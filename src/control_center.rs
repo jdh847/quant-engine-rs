@@ -1,0 +1,330 @@
+use std::{
+    collections::HashMap,
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
+
+use anyhow::{anyhow, Result};
+use serde::Deserialize;
+
+use crate::registry::{read_run_registry, top_registry_entries, RunRegistryEntry};
+
+#[derive(Debug, Clone)]
+pub struct ControlCenterRequest {
+    pub output_dir: PathBuf,
+    pub refresh_secs: u64,
+    pub cycles: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ControlCenterReport {
+    pub ticks: usize,
+    pub registry_runs: usize,
+    pub last_end_equity: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ControlCenterSnapshot {
+    summary: HashMap<String, String>,
+    registry_runs: usize,
+    registry_top: Vec<RunRegistryEntry>,
+    daemon: Option<DaemonState>,
+    data_quality: Option<DataQualityStatus>,
+    robustness: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DaemonState {
+    last_cycle: usize,
+    last_end_equity: f64,
+    max_drawdown_observed: f64,
+    alerts: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DataQualityStatus {
+    pass: usize,
+    warn: usize,
+    fail: usize,
+}
+
+pub fn run_control_center(req: &ControlCenterRequest) -> Result<ControlCenterReport> {
+    if req.cycles == 0 {
+        return Err(anyhow!("cycles must be > 0"));
+    }
+
+    let mut report = ControlCenterReport::default();
+    for tick in 1..=req.cycles {
+        let snapshot = collect_snapshot(&req.output_dir)?;
+        render_snapshot(&req.output_dir, tick, req.cycles, &snapshot)?;
+
+        report.ticks = tick;
+        report.registry_runs = snapshot.registry_runs;
+        report.last_end_equity = parse_decimal(snapshot.summary.get("end_equity")).unwrap_or(0.0);
+
+        if tick < req.cycles && req.refresh_secs > 0 {
+            thread::sleep(Duration::from_secs(req.refresh_secs));
+        }
+    }
+
+    Ok(report)
+}
+
+fn collect_snapshot(root: &Path) -> Result<ControlCenterSnapshot> {
+    let summary_path = first_existing_path(&[root.join("summary.txt")]);
+    let summary = match summary_path {
+        Some(path) => parse_key_value_file(&path)?,
+        None => HashMap::new(),
+    };
+
+    let registry_path = root.join("run_registry.csv");
+    let registry_entries = if registry_path.exists() {
+        read_run_registry(&registry_path)?
+    } else {
+        Vec::new()
+    };
+    let registry_top = top_registry_entries(&registry_entries, 5);
+
+    let daemon_path = first_existing_path(&[
+        root.join("paper_daemon_state.json"),
+        root.join("daemon").join("paper_daemon_state.json"),
+    ]);
+    let daemon = daemon_path
+        .as_ref()
+        .map(fs::read_to_string)
+        .transpose()?
+        .map(|text| serde_json::from_str::<DaemonState>(&text))
+        .transpose()?;
+
+    let quality_path = first_existing_path(&[
+        root.join("data_quality_report.csv"),
+        root.join("data_quality").join("data_quality_report.csv"),
+    ]);
+    let data_quality = quality_path
+        .as_ref()
+        .map(|path| load_data_quality_status(path))
+        .transpose()?;
+
+    let robustness_path = first_existing_path(&[
+        root.join("robustness_summary.txt"),
+        root.join("robustness").join("robustness_summary.txt"),
+    ]);
+    let robustness = match robustness_path {
+        Some(path) => parse_key_value_file(&path)?,
+        None => HashMap::new(),
+    };
+
+    Ok(ControlCenterSnapshot {
+        summary,
+        registry_runs: registry_entries.len(),
+        registry_top,
+        daemon,
+        data_quality,
+        robustness,
+    })
+}
+
+fn render_snapshot(
+    root: &Path,
+    tick: usize,
+    total_ticks: usize,
+    snapshot: &ControlCenterSnapshot,
+) -> Result<()> {
+    let mut out = io::stdout();
+    write!(out, "\x1B[2J\x1B[H")?;
+    writeln!(out, "Private Quant Bot Control Center")?;
+    writeln!(
+        out,
+        "root={} | tick={}/{}",
+        root.display(),
+        tick,
+        total_ticks
+    )?;
+    writeln!(out)?;
+
+    writeln!(
+        out,
+        "Run Summary | end_equity={} pnl_ratio={} max_drawdown={} sharpe={} trades={} rejections={}",
+        snapshot
+            .summary
+            .get("end_equity")
+            .map_or("-", String::as_str),
+        snapshot
+            .summary
+            .get("pnl_ratio")
+            .map_or("-", String::as_str),
+        snapshot
+            .summary
+            .get("max_drawdown")
+            .map_or("-", String::as_str),
+        snapshot.summary.get("sharpe").map_or("-", String::as_str),
+        snapshot.summary.get("trades").map_or("-", String::as_str),
+        snapshot
+            .summary
+            .get("rejections")
+            .map_or("-", String::as_str),
+    )?;
+
+    writeln!(out, "Registry | total_runs={}", snapshot.registry_runs)?;
+    if snapshot.registry_top.is_empty() {
+        writeln!(out, "  (no runs yet)")?;
+    } else {
+        for (idx, row) in snapshot.registry_top.iter().enumerate() {
+            let plugin = if row.strategy_plugin.is_empty() {
+                "-"
+            } else {
+                row.strategy_plugin.as_str()
+            };
+            let method = if row.portfolio_method.is_empty() {
+                "-"
+            } else {
+                row.portfolio_method.as_str()
+            };
+            writeln!(
+                out,
+                "  {}. {} {} {}:{:.4} score={:.4} plugin={} method={}",
+                idx + 1,
+                row.timestamp_utc,
+                row.command,
+                row.primary_metric_name,
+                row.primary_metric_value,
+                row.composite_score,
+                plugin,
+                method
+            )?;
+        }
+    }
+
+    if let Some(daemon) = &snapshot.daemon {
+        writeln!(
+            out,
+            "Daemon | cycle={} alerts={} last_end_equity={:.2} max_drawdown_observed={:.4}%",
+            daemon.last_cycle,
+            daemon.alerts,
+            daemon.last_end_equity,
+            daemon.max_drawdown_observed * 100.0
+        )?;
+    }
+
+    if let Some(quality) = &snapshot.data_quality {
+        writeln!(
+            out,
+            "Data Quality | pass={} warn={} fail={}",
+            quality.pass, quality.warn, quality.fail
+        )?;
+    }
+
+    if !snapshot.robustness.is_empty() {
+        writeln!(
+            out,
+            "Robustness | folds={} avg_test_pnl_ratio={} avg_deflated_sharpe_proxy={}",
+            snapshot.robustness.get("folds").map_or("-", String::as_str),
+            snapshot
+                .robustness
+                .get("avg_selected_test_pnl_ratio")
+                .or_else(|| snapshot.robustness.get("avg_test_pnl_ratio"))
+                .map_or("-", String::as_str),
+            snapshot
+                .robustness
+                .get("avg_deflated_sharpe_proxy")
+                .map_or("-", String::as_str),
+        )?;
+    }
+
+    out.flush()?;
+    Ok(())
+}
+
+fn first_existing_path(paths: &[PathBuf]) -> Option<PathBuf> {
+    paths.iter().find(|p| p.exists()).cloned()
+}
+
+fn parse_key_value_file(path: &Path) -> Result<HashMap<String, String>> {
+    let text = fs::read_to_string(path)?;
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect())
+}
+
+fn load_data_quality_status(path: &Path) -> Result<DataQualityStatus> {
+    let mut rdr = csv::Reader::from_path(path)?;
+    let mut status = DataQualityStatus::default();
+    for rec in rdr.records() {
+        let rec = rec?;
+        match rec.get(9).unwrap_or_default() {
+            "PASS" => status.pass += 1,
+            "WARN" => status.warn += 1,
+            "FAIL" => status.fail += 1,
+            _ => {}
+        }
+    }
+    Ok(status)
+}
+
+fn parse_decimal(value: Option<&String>) -> Option<f64> {
+    let raw = value?;
+    let trimmed = raw.trim().trim_end_matches('%');
+    trimmed.parse::<f64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use crate::{
+        engine::BacktestStats,
+        registry::{append_run_registry, RunRegistryBacktestInput, RunRegistryEntry},
+    };
+
+    use super::{run_control_center, ControlCenterRequest};
+
+    #[test]
+    fn control_center_runs_single_tick() {
+        let dir = std::env::temp_dir().join("private_quant_bot_control_center_test");
+        if dir.exists() {
+            fs::remove_dir_all(&dir).ok();
+        }
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join("summary.txt"),
+            "end_equity=1001000.0\npnl_ratio=1.2000%\nmax_drawdown=0.4000%\n",
+        )
+        .expect("write summary");
+
+        let entry = RunRegistryEntry::from_backtest_input(RunRegistryBacktestInput {
+            command: "run".to_string(),
+            output_dir: PathBuf::from("outputs_rust"),
+            strategy_plugin: "layered_multi_factor".to_string(),
+            portfolio_method: "risk_parity".to_string(),
+            markets: "A|JP|US".to_string(),
+            primary_metric_name: "pnl_ratio".to_string(),
+            primary_metric_value: 0.012,
+            stats: BacktestStats {
+                pnl_ratio: 0.012,
+                max_drawdown: 0.004,
+                sharpe: 1.2,
+                ..BacktestStats::default()
+            },
+            notes: "test".to_string(),
+        });
+        append_run_registry(&dir, &entry).expect("append");
+
+        let report = run_control_center(&ControlCenterRequest {
+            output_dir: dir,
+            refresh_secs: 0,
+            cycles: 1,
+        })
+        .expect("run control center");
+
+        assert_eq!(report.ticks, 1);
+        assert_eq!(report.registry_runs, 1);
+        assert!(report.last_end_equity > 0.0);
+    }
+}

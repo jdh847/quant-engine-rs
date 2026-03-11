@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "private-quant-bot"
+version = "0.1.0"
+description = "Personal multi-market quant bot MVP with paper execution"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "chocolate" }
+]
+dependencies = []
+
+[project.scripts]
+quant-bot = "quant_bot.runner:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quant_bot*"]

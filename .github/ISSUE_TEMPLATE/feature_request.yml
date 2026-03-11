@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a new capability for strategy, risk, execution, or UX.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe expected behavior and API/CLI changes.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Clear testable criteria for done.
+      placeholder: |
+        - [ ] New command supports ...
+        - [ ] Unit tests cover ...
+        - [ ] Docs updated ...
