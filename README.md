@@ -10,6 +10,7 @@ Docs:
 - Tutorials: `docs/TUTORIALS.md`
 - Paper-only security model: `docs/SECURITY_PAPER_ONLY.md`
 - Plugin SDK: `docs/PLUGIN_SDK.md`
+- Open-source release checklist: `docs/OPEN_SOURCE_RELEASE_CHECKLIST.md`
 
 ## Core guarantees
 
@@ -17,6 +18,14 @@ Docs:
 - Paper-only execution path (`broker.paper_only = true`)
 - Multi-market setup: US / A-share / JP
 - Strategy/risk/execution decoupled (inspired by top Rust quant architectures)
+
+## Safety & legal
+
+- Paper-only by default. This is not a live trading system.
+- Not financial advice.
+- If you ever pasted a token (PAT) or broker credential in any chat/log: revoke and rotate it immediately.
+
+License: MIT OR Apache-2.0 (see [LICENSE](LICENSE)).
 
 ## GitHub inspirations
 

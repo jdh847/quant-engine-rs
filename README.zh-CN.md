@@ -8,6 +8,15 @@
 - 教程：`docs/TUTORIALS.md`
 - Paper-only 安全模型：`docs/SECURITY_PAPER_ONLY.md`
 - 插件 SDK：`docs/PLUGIN_SDK.md`
+- 开源发布检查清单：`docs/OPEN_SOURCE_RELEASE_CHECKLIST.md`
+
+## 安全与免责声明
+
+- 默认仅测试盘（Paper-only），不是实盘系统。
+- 非投资建议。
+- 如果你曾把 GitHub Token（PAT）或券商凭证贴到任何聊天/日志里：立刻 revoke 并轮换。
+
+License：MIT OR Apache-2.0（见 [LICENSE](LICENSE)）。
 
 ## 当前能力
 

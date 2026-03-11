@@ -3,6 +3,11 @@ name = "private_quant_bot"
 version = "0.1.0"
 edition = "2021"
 description = "Personal multi-market quant bot MVP in Rust"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/jdh847/private-quant-bot-rust"
+keywords = ["trading", "quant", "backtest", "portfolio", "risk"]
+categories = ["finance"]
 
 [dependencies]
 anyhow = "1.0"

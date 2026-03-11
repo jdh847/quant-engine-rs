@@ -8,6 +8,15 @@
 - チュートリアル: `docs/TUTORIALS.md`
 - ペーパー専用セキュリティモデル: `docs/SECURITY_PAPER_ONLY.md`
 - プラグイン SDK: `docs/PLUGIN_SDK.md`
+- OSS 公開チェックリスト: `docs/OPEN_SOURCE_RELEASE_CHECKLIST.md`
+
+## 安全性と免責
+
+- デフォルトはペーパー取引のみ。実運用の売買システムではありません。
+- 投資助言ではありません。
+- もし PAT やブローカー認証情報をチャット/ログに貼った場合: 直ちに revoke/ローテーションしてください。
+
+License: MIT OR Apache-2.0（[LICENSE](LICENSE) 参照）。
 
 ## 主要機能
 
