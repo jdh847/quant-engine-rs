@@ -8,6 +8,7 @@ Docs:
 - 日本語: [README.ja.md](README.ja.md)
 - Data & credibility: `docs/DATA.md`
 - Tutorials: `docs/TUTORIALS.md`
+- Promotion playbook: `docs/PROMOTION.md`
 - Paper-only security model: `docs/SECURITY_PAPER_ONLY.md`
 - Plugin SDK: `docs/PLUGIN_SDK.md`
 - Open-source release checklist: `docs/OPEN_SOURCE_RELEASE_CHECKLIST.md`
