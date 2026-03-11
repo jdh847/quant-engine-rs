@@ -6,12 +6,15 @@ use std::{
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::i18n::{dashboard_text, Language};
+use crate::i18n::{dashboard_text, DashboardText, Language};
 
 #[derive(Debug, Serialize)]
 struct EquityRow {
     date: String,
     equity: f64,
+    cash: f64,
+    gross_exposure: f64,
+    net_exposure: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -22,6 +25,119 @@ struct TradeRow {
     side: String,
     qty: i64,
     price: f64,
+    fees: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct RejectionRow {
+    date: String,
+    market: String,
+    symbol: String,
+    side: String,
+    qty: i64,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DashboardI18n {
+    en: DashboardI18nText,
+    #[serde(rename = "zh-CN")]
+    zh_cn: DashboardI18nText,
+    #[serde(rename = "ja")]
+    ja: DashboardI18nText,
+}
+
+#[derive(Debug, Serialize)]
+struct DashboardI18nText {
+    title: String,
+    subtitle: String,
+    generated_from: String,
+    overview: String,
+    series: String,
+    equity: String,
+    cash: String,
+    gross_exposure: String,
+    net_exposure: String,
+    equity_curve: String,
+    run_summary: String,
+    kpi_start_equity: String,
+    kpi_end_equity: String,
+    kpi_pnl: String,
+    kpi_pnl_ratio: String,
+    kpi_max_drawdown: String,
+    kpi_cagr: String,
+    kpi_sharpe: String,
+    kpi_trades: String,
+    kpi_rejections: String,
+    recent_trades: String,
+    filters: String,
+    all: String,
+    search: String,
+    date: String,
+    market: String,
+    symbol: String,
+    side: String,
+    qty: String,
+    price: String,
+    fees: String,
+    rejections: String,
+    reason: String,
+    factors: String,
+    avg_selected_symbols: String,
+    start: String,
+    end: String,
+    buy: String,
+    sell: String,
+    live_on: String,
+    live_fallback: String,
+    live_init: String,
+}
+
+fn i18n_text(t: DashboardText) -> DashboardI18nText {
+    DashboardI18nText {
+        title: t.title.to_string(),
+        subtitle: t.subtitle.to_string(),
+        generated_from: t.generated_from.to_string(),
+        overview: t.overview.to_string(),
+        series: t.series.to_string(),
+        equity: t.equity.to_string(),
+        cash: t.cash.to_string(),
+        gross_exposure: t.gross_exposure.to_string(),
+        net_exposure: t.net_exposure.to_string(),
+        equity_curve: t.equity_curve.to_string(),
+        run_summary: t.run_summary.to_string(),
+        kpi_start_equity: t.kpi_start_equity.to_string(),
+        kpi_end_equity: t.kpi_end_equity.to_string(),
+        kpi_pnl: t.kpi_pnl.to_string(),
+        kpi_pnl_ratio: t.kpi_pnl_ratio.to_string(),
+        kpi_max_drawdown: t.kpi_max_drawdown.to_string(),
+        kpi_cagr: t.kpi_cagr.to_string(),
+        kpi_sharpe: t.kpi_sharpe.to_string(),
+        kpi_trades: t.kpi_trades.to_string(),
+        kpi_rejections: t.kpi_rejections.to_string(),
+        recent_trades: t.recent_trades.to_string(),
+        filters: t.filters.to_string(),
+        all: t.all.to_string(),
+        search: t.search.to_string(),
+        date: t.date.to_string(),
+        market: t.market.to_string(),
+        symbol: t.symbol.to_string(),
+        side: t.side.to_string(),
+        qty: t.qty.to_string(),
+        price: t.price.to_string(),
+        fees: t.fees.to_string(),
+        rejections: t.rejections.to_string(),
+        reason: t.reason.to_string(),
+        factors: t.factors.to_string(),
+        avg_selected_symbols: t.avg_selected_symbols.to_string(),
+        start: t.start.to_string(),
+        end: t.end.to_string(),
+        buy: t.buy.to_string(),
+        sell: t.sell.to_string(),
+        live_on: t.live_on.to_string(),
+        live_fallback: t.live_fallback.to_string(),
+        live_init: t.live_init.to_string(),
+    }
 }
 
 pub fn build_dashboard(output_dir: impl AsRef<Path>) -> Result<PathBuf> {
@@ -36,78 +152,33 @@ pub fn build_dashboard_with_language(
     let summary_path = output_dir.join("summary.txt");
     let equity_path = output_dir.join("equity_curve.csv");
     let trades_path = output_dir.join("trades.csv");
+    let rejections_path = output_dir.join("rejections.csv");
+    let factor_summary_path = output_dir.join("factor_attribution_summary.txt");
 
     let summary = fs::read_to_string(summary_path).unwrap_or_else(|_| "no summary".to_string());
     let summary_html = escape_html(&summary);
+    let summary_kv = parse_kv_lines(&summary);
     let equity_rows = read_equity_rows(&equity_path)?;
     let trade_rows = read_trade_rows(&trades_path)?;
-
-    let labels: Vec<String> = equity_rows.iter().map(|r| r.date.clone()).collect();
-    let points: Vec<f64> = equity_rows.iter().map(|r| r.equity).collect();
+    let rejection_rows = read_rejection_rows(&rejections_path)?;
+    let factor_summary = fs::read_to_string(&factor_summary_path).unwrap_or_else(|_| String::new());
+    let factor_kv = parse_kv_lines(&factor_summary);
 
     let trade_json = serde_json::to_string(&trade_rows)?;
-    let labels_json = serde_json::to_string(&labels)?;
-    let points_json = serde_json::to_string(&points)?;
+    let rejection_json = serde_json::to_string(&rejection_rows)?;
+    let equity_rows_json = serde_json::to_string(&equity_rows)?;
+    let summary_kv_json = serde_json::to_string(&summary_kv)?;
+    let factor_kv_json = serde_json::to_string(&factor_kv)?;
     let text = dashboard_text(language);
     let text_en = dashboard_text(Language::En);
     let text_zh = dashboard_text(Language::Zh);
     let text_ja = dashboard_text(Language::Ja);
-    let i18n_json = serde_json::to_string(&serde_json::json!({
-        "en": {
-            "title": text_en.title,
-            "subtitle": text_en.subtitle,
-            "generated_from": text_en.generated_from,
-            "equity_curve": text_en.equity_curve,
-            "run_summary": text_en.run_summary,
-            "recent_trades": text_en.recent_trades,
-            "date": text_en.date,
-            "market": text_en.market,
-            "symbol": text_en.symbol,
-            "side": text_en.side,
-            "qty": text_en.qty,
-            "price": text_en.price,
-            "start": text_en.start,
-            "end": text_en.end,
-            "buy": text_en.buy,
-            "sell": text_en.sell,
-        },
-        "zh-CN": {
-            "title": text_zh.title,
-            "subtitle": text_zh.subtitle,
-            "generated_from": text_zh.generated_from,
-            "equity_curve": text_zh.equity_curve,
-            "run_summary": text_zh.run_summary,
-            "recent_trades": text_zh.recent_trades,
-            "date": text_zh.date,
-            "market": text_zh.market,
-            "symbol": text_zh.symbol,
-            "side": text_zh.side,
-            "qty": text_zh.qty,
-            "price": text_zh.price,
-            "start": text_zh.start,
-            "end": text_zh.end,
-            "buy": text_zh.buy,
-            "sell": text_zh.sell,
-        },
-        "ja": {
-            "title": text_ja.title,
-            "subtitle": text_ja.subtitle,
-            "generated_from": text_ja.generated_from,
-            "equity_curve": text_ja.equity_curve,
-            "run_summary": text_ja.run_summary,
-            "recent_trades": text_ja.recent_trades,
-            "date": text_ja.date,
-            "market": text_ja.market,
-            "symbol": text_ja.symbol,
-            "side": text_ja.side,
-            "qty": text_ja.qty,
-            "price": text_ja.price,
-            "start": text_ja.start,
-            "end": text_ja.end,
-            "buy": text_ja.buy,
-            "sell": text_ja.sell,
-        }
-    }))?;
+    let i18n = DashboardI18n {
+        en: i18n_text(text_en),
+        zh_cn: i18n_text(text_zh),
+        ja: i18n_text(text_ja),
+    };
+    let i18n_json = serde_json::to_string(&i18n)?;
     let default_lang_json = serde_json::to_string(language.html_lang())?;
 
     let html = format!(
@@ -119,36 +190,90 @@ pub fn build_dashboard_with_language(
 <title>Private Quant Bot Dashboard</title>
 <style>
 :root {{
-  --bg: #f5f7fb;
-  --panel: #ffffff;
-  --ink: #111827;
-  --muted: #6b7280;
-  --line: #d1d5db;
+  --panel: rgba(255,255,255,0.92);
+  --panel2: rgba(255,255,255,0.80);
+  --ink: #0b1220;
+  --muted: rgba(11,18,32,0.60);
+  --line: rgba(11,18,32,0.12);
   --accent: #0f766e;
-  --accent-soft: #ccfbf1;
+  --accent2: #f59e0b;
   --danger: #b91c1c;
 }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: "Avenir Next", "Segoe UI", sans-serif; background: linear-gradient(160deg, #f7fafc 0%, #ecfeff 60%, #f0fdf4 100%); color: var(--ink); }}
+body {{
+  margin: 0;
+  font-family: "Avenir Next", "Avenir", "Helvetica Neue", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 12% 10%, rgba(245, 158, 11, 0.20), transparent 55%),
+    radial-gradient(900px 520px at 75% 12%, rgba(15, 118, 110, 0.25), transparent 60%),
+    radial-gradient(900px 600px at 70% 85%, rgba(16, 185, 129, 0.18), transparent 60%),
+    linear-gradient(180deg, #f7fafc 0%, #ecfeff 60%, #f0fdf4 100%);
+}}
 .wrap {{ max-width: 1200px; margin: 24px auto; padding: 0 16px 24px; }}
-.head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }}
-.title {{ font-size: 28px; font-weight: 700; letter-spacing: 0.2px; }}
+.head {{ display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 14px; }}
+.title {{ font-size: 28px; font-weight: 800; letter-spacing: 0.2px; }}
 .sub {{ color: var(--muted); font-size: 14px; }}
-.head-right {{ display: flex; align-items: center; gap: 10px; }}
-.lang-switch {{ border: 1px solid #cbd5e1; background: #ffffff; border-radius: 10px; padding: 6px 10px; font-size: 13px; }}
-.grid {{ display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }}
-.panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05); }}
+.head-right {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }}
+.lang-switch {{ border: 1px solid rgba(15,23,42,0.12); background: rgba(255,255,255,0.95); border-radius: 10px; padding: 6px 10px; font-size: 13px; }}
+.chip {{ border: 1px solid rgba(15,23,42,0.12); background: rgba(255,255,255,0.75); border-radius: 999px; padding: 6px 10px; font-size: 12px; }}
+.grid {{ display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }}
+.panel {{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  animation: rise 380ms ease both;
+}}
+.panel[data-delay="1"] {{ animation-delay: 40ms; }}
+.panel[data-delay="2"] {{ animation-delay: 80ms; }}
+.panel[data-delay="3"] {{ animation-delay: 120ms; }}
+.panel[data-delay="4"] {{ animation-delay: 160ms; }}
+.panel[data-delay="5"] {{ animation-delay: 200ms; }}
 .panel h3 {{ margin: 0 0 12px 0; font-size: 16px; }}
-#chart {{ width: 100%; height: 360px; border-radius: 10px; background: linear-gradient(180deg, #ecfeff 0%, #ffffff 70%); border: 1px solid #a5f3fc; }}
-.summary {{ white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #f9fafb; padding: 10px; border-radius: 8px; border: 1px solid #e5e7eb; }}
+.toolbar {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }}
+.select {{ border: 1px solid rgba(15,23,42,0.12); background: rgba(255,255,255,0.90); border-radius: 10px; padding: 6px 10px; font-size: 13px; }}
+#chartWrap {{ position: relative; }}
+#chart {{ width: 100%; height: 360px; border-radius: 12px; background: linear-gradient(180deg, rgba(236,254,255,0.9) 0%, rgba(255,255,255,0.95) 70%); border: 1px solid rgba(15,23,42,0.10); }}
+.tooltip {{
+  position: absolute;
+  pointer-events: none;
+  background: rgba(255,255,255,0.96);
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+  display: none;
+}}
+.summary {{ white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: rgba(255,255,255,0.65); padding: 10px; border-radius: 10px; border: 1px solid rgba(15, 23, 42, 0.10); }}
+.kpis {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }}
+.kpi {{ background: var(--panel2); border: 1px solid rgba(15, 23, 42, 0.10); border-radius: 14px; padding: 12px; }}
+.kpi .k {{ color: var(--muted); font-size: 12px; }}
+.kpi .v {{ font-size: 18px; font-weight: 800; margin-top: 6px; letter-spacing: 0.2px; }}
+.kpi .v.negative {{ color: var(--danger); }}
+.kpi .v.positive {{ color: var(--accent); }}
 table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #eef2f7; }}
+th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid rgba(15,23,42,0.06); }}
 th {{ color: var(--muted); font-weight: 600; }}
-.tag-buy {{ color: #065f46; background: #d1fae5; padding: 2px 6px; border-radius: 999px; font-weight: 600; }}
-.tag-sell {{ color: #7f1d1d; background: #fee2e2; padding: 2px 6px; border-radius: 999px; font-weight: 600; }}
+.tag-buy {{ color: #065f46; background: #d1fae5; padding: 2px 6px; border-radius: 999px; font-weight: 700; }}
+.tag-sell {{ color: #7f1d1d; background: #fee2e2; padding: 2px 6px; border-radius: 999px; font-weight: 700; }}
+.pill {{ display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 6px 10px; border: 1px solid rgba(15,23,42,0.12); background: rgba(255,255,255,0.75); font-size: 12px; }}
+.dot {{ width: 8px; height: 8px; border-radius: 999px; background: var(--accent2); }}
+.dot.ok {{ background: var(--accent); }}
+.filters {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }}
+.filters input {{ border: 1px solid rgba(15,23,42,0.12); background: rgba(255,255,255,0.90); border-radius: 10px; padding: 8px 10px; font-size: 13px; }}
+.factor-bars {{ display: grid; gap: 8px; }}
+.bar-row {{ display: grid; grid-template-columns: 140px 1fr 64px; gap: 10px; align-items: center; }}
+.bar-track {{ height: 10px; border-radius: 999px; background: rgba(15,23,42,0.08); overflow: hidden; }}
+.bar-fill {{ height: 100%; border-radius: 999px; background: linear-gradient(90deg, rgba(15,118,110,0.95), rgba(245,158,11,0.92)); }}
+@keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
   #chart {{ height: 280px; }}
+  .filters {{ grid-template-columns: 1fr; }}
+  .bar-row {{ grid-template-columns: 120px 1fr 56px; }}
 }}
 </style>
 </head>
@@ -166,39 +291,97 @@ th {{ color: var(--muted); font-weight: 600; }}
           <option value="ja">日本語</option>
         </select>
         <div class="sub" id="generated-from">{generated_from}</div>
-        <div class="sub" id="live-status">live refresh: init</div>
+        <div class="pill" id="live-pill"><span class="dot" id="live-dot"></span><span id="live-status">live refresh: init</span></div>
       </div>
     </div>
 
     <div class="grid">
-      <section class="panel">
-        <h3 id="equity-curve">{equity_curve}</h3>
-        <canvas id="chart"></canvas>
+      <section class="panel" data-delay="1">
+        <div class="toolbar">
+          <h3 id="equity-curve" style="margin:0;">{equity_curve}</h3>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <span class="sub" id="series-label">{series}</span>
+            <select id="series-select" class="select">
+              <option value="equity">Equity</option>
+              <option value="cash">Cash</option>
+              <option value="gross_exposure">Gross</option>
+              <option value="net_exposure">Net</option>
+            </select>
+          </div>
+        </div>
+        <div id="chartWrap">
+          <canvas id="chart"></canvas>
+          <div class="tooltip" id="tooltip"></div>
+        </div>
       </section>
 
-      <section class="panel">
-        <h3 id="run-summary">{run_summary}</h3>
-        <div class="summary" id="summary-block">{summary_html}</div>
+      <section class="panel" data-delay="2">
+        <div class="toolbar">
+          <h3 id="overview" style="margin:0;">{overview}</h3>
+          <span class="chip" id="meta-chip"></span>
+        </div>
+        <div class="kpis" id="kpis"></div>
+        <div style="margin-top: 12px;">
+          <h3 id="run-summary" style="margin:0 0 10px 0;">{run_summary}</h3>
+          <div class="summary" id="summary-block">{summary_html}</div>
+        </div>
       </section>
     </div>
 
-    <section class="panel" style="margin-top: 16px;">
-      <h3 id="recent-trades">{recent_trades}</h3>
+    <section class="panel" data-delay="3" style="margin-top: 16px;">
+      <div class="toolbar">
+        <h3 id="recent-trades" style="margin:0;">{recent_trades}</h3>
+        <span class="chip" id="trade-stats"></span>
+      </div>
+      <div class="filters">
+        <select id="filter-market" class="select"></select>
+        <select id="filter-side" class="select"></select>
+        <input id="filter-symbol" type="text" placeholder="symbol..." />
+      </div>
       <table>
         <thead>
           <tr>
-            <th id="th-date">{date}</th><th id="th-market">{market}</th><th id="th-symbol">{symbol}</th><th id="th-side">{side}</th><th id="th-qty">{qty}</th><th id="th-price">{price}</th>
+            <th id="th-date">{date}</th><th id="th-market">{market}</th><th id="th-symbol">{symbol}</th><th id="th-side">{side}</th><th id="th-qty">{qty}</th><th id="th-price">{price}</th><th id="th-fees">{fees}</th>
           </tr>
         </thead>
         <tbody id="trades"></tbody>
       </table>
     </section>
+
+    <div class="grid" style="margin-top: 16px;">
+      <section class="panel" data-delay="4">
+        <div class="toolbar">
+          <h3 id="rejections-title" style="margin:0;">{rejections}</h3>
+          <span class="chip" id="rejection-stats"></span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th id="rej-th-date">{date}</th><th id="rej-th-market">{market}</th><th id="rej-th-symbol">{symbol}</th><th id="rej-th-side">{side}</th><th id="rej-th-qty">{qty}</th><th id="rej-th-reason">{reason}</th>
+            </tr>
+          </thead>
+          <tbody id="rejections"></tbody>
+        </table>
+      </section>
+
+      <section class="panel" data-delay="5">
+        <div class="toolbar">
+          <h3 id="factors-title" style="margin:0;">{factors}</h3>
+          <span class="chip" id="factor-stats"></span>
+        </div>
+        <div class="factor-bars" id="factor-bars"></div>
+      </section>
+    </div>
   </div>
 
 <script>
-let labels = {labels_json};
-let points = {points_json};
+let equityRows = {equity_rows_json};
+let labels = equityRows.map(r => r.date || '');
+let points = equityRows.map(r => Number(r.equity || 0));
 let trades = {trade_json};
+let rejections = {rejection_json};
+let summaryKv = {summary_kv_json};
+let factorKv = {factor_kv_json};
 const i18n = {i18n_json};
 const defaultLang = {default_lang_json};
 
@@ -207,9 +390,66 @@ const ctx = c.getContext('2d');
 const langSwitch = document.getElementById('lang-switch');
 const summaryBlock = document.getElementById('summary-block');
 const liveStatus = document.getElementById('live-status');
+const liveDot = document.getElementById('live-dot');
+const tooltip = document.getElementById('tooltip');
+const kpisEl = document.getElementById('kpis');
+const seriesSelect = document.getElementById('series-select');
+const metaChip = document.getElementById('meta-chip');
+const tradeStats = document.getElementById('trade-stats');
+const rejectionStats = document.getElementById('rejection-stats');
+const factorStats = document.getElementById('factor-stats');
+const marketSel = document.getElementById('filter-market');
+const sideSel = document.getElementById('filter-side');
+const symbolInput = document.getElementById('filter-symbol');
 
 function getText(lang) {{
   return i18n[lang] || i18n['en'];
+}}
+
+function parseKv(text) {{
+  const out = {{}};
+  (text || '').split(/\\r?\\n/).forEach(line => {{
+    const m = line.match(/^\\s*([^=]+)=(.*)\\s*$/);
+    if (!m) return;
+    out[m[1].trim()] = m[2].trim();
+  }});
+  return out;
+}}
+
+function parseNum(s) {{
+  if (s == null) return null;
+  const raw = String(s).trim();
+  if (!raw) return null;
+  const pct = raw.endsWith('%');
+  const n = Number(raw.replace(/%/g, ''));
+  if (Number.isNaN(n)) return null;
+  return pct ? n / 100.0 : n;
+}}
+
+function fmtMoney(n) {{
+  if (n == null || !Number.isFinite(n)) return '-';
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+  if (abs >= 1e9) return sign + (abs / 1e9).toFixed(2) + 'B';
+  if (abs >= 1e6) return sign + (abs / 1e6).toFixed(2) + 'M';
+  if (abs >= 1e3) return sign + (abs / 1e3).toFixed(2) + 'K';
+  return sign + abs.toFixed(2);
+}}
+
+function fmtPct(ratio) {{
+  if (ratio == null || !Number.isFinite(ratio)) return '-';
+  return (ratio * 100).toFixed(2) + '%';
+}}
+
+function seriesLabel(key, text) {{
+  if (key === 'cash') return text.cash;
+  if (key === 'gross_exposure') return text.gross_exposure;
+  if (key === 'net_exposure') return text.net_exposure;
+  return text.equity;
+}}
+
+function extractSeries(key) {{
+  return equityRows.map(r => Number(r[key] || 0));
 }}
 
 function renderChart(text) {{
@@ -220,9 +460,6 @@ function renderChart(text) {{
   c.height = Math.floor(h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = '#0f766e';
-  ctx.fillStyle = 'rgba(15,118,110,0.12)';
 
   if (points.length <= 1) {{
     return;
@@ -233,38 +470,262 @@ function renderChart(text) {{
   const span = Math.max(max - min, 1);
   const pad = 24;
   const stepX = (w - pad * 2) / (points.length - 1);
+  const yFor = (v) => h - pad - ((v - min) / span) * (h - pad * 2);
 
+  // Grid
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.10)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i <= 4; i++) {{
+    const y = pad + (i * (h - pad * 2) / 4);
+    ctx.moveTo(pad, y);
+    ctx.lineTo(w - pad, y);
+  }}
+  ctx.stroke();
+
+  // Line
+  ctx.strokeStyle = '#0f766e';
+  ctx.lineWidth = 2;
   ctx.beginPath();
   points.forEach((v, i) => {{
     const x = pad + i * stepX;
-    const y = h - pad - ((v - min) / span) * (h - pad * 2);
+    const y = yFor(v);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }});
   ctx.stroke();
 
+  // Fill
+  ctx.fillStyle = 'rgba(15,118,110,0.12)';
   ctx.lineTo(w - pad, h - pad);
   ctx.lineTo(pad, h - pad);
   ctx.closePath();
   ctx.fill();
 
+  // Labels
   ctx.fillStyle = '#334155';
   ctx.font = '12px Avenir Next, sans-serif';
-  ctx.fillText(text.start + ': ' + points[0].toFixed(2), pad, 16);
-  ctx.fillText(text.end + ': ' + points[points.length - 1].toFixed(2), w - 160, 16);
+  const first = points[0];
+  const last = points[points.length - 1];
+  ctx.fillText(text.start + ': ' + fmtMoney(first), pad, 16);
+  ctx.fillText(text.end + ': ' + fmtMoney(last), w - 180, 16);
+
+  // Hover crosshair
+  if (window.__hoverIndex != null) {{
+    const i = window.__hoverIndex;
+    const x = pad + i * stepX;
+    const y = yFor(points[i]);
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.9)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, pad);
+    ctx.lineTo(x, h - pad);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(245, 158, 11, 1.0)';
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }}
 }}
 
 function renderTrades(text) {{
   const tbody = document.getElementById('trades');
   tbody.innerHTML = '';
-  trades.slice(-30).reverse().forEach(t => {{
+  const fMarket = marketSel.value;
+  const fSide = sideSel.value;
+  const q = (symbolInput.value || '').trim().toUpperCase();
+  const filtered = trades.filter(t => {{
+    if (fMarket && fMarket !== '__all__' && t.market !== fMarket) return false;
+    if (fSide && fSide !== '__all__' && t.side !== fSide) return false;
+    if (q && !String(t.symbol || '').toUpperCase().includes(q)) return false;
+    return true;
+  }});
+
+  filtered.slice(-60).reverse().forEach(t => {{
     const tr = document.createElement('tr');
     const sideTag = t.side === 'BUY'
       ? '<span class="tag-buy">' + text.buy + '</span>'
       : '<span class="tag-sell">' + text.sell + '</span>';
-    tr.innerHTML = `<td>${{t.date}}</td><td>${{t.market}}</td><td>${{t.symbol}}</td><td>${{sideTag}}</td><td>${{t.qty}}</td><td>${{t.price.toFixed(4)}}</td>`;
+    const fees = Number(t.fees || 0);
+    tr.innerHTML = `<td>${{t.date}}</td><td>${{t.market}}</td><td>${{t.symbol}}</td><td>${{sideTag}}</td><td>${{t.qty}}</td><td>${{Number(t.price||0).toFixed(4)}}</td><td>${{fees.toFixed(2)}}</td>`;
     tbody.appendChild(tr);
   }});
+}}
+
+function renderRejections() {{
+  const tbody = document.getElementById('rejections');
+  tbody.innerHTML = '';
+  if (!rejections || rejections.length === 0) {{
+    rejectionStats.textContent = '0';
+    return;
+  }}
+  rejectionStats.textContent = String(rejections.length);
+  rejections.slice(-60).reverse().forEach(r => {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${{r.date}}</td><td>${{r.market}}</td><td>${{r.symbol}}</td><td>${{r.side}}</td><td>${{r.qty}}</td><td>${{r.reason}}</td>`;
+    tbody.appendChild(tr);
+  }});
+}}
+
+function factorBarValue(key) {{
+  const raw = (factorKv || {{}})[key];
+  if (!raw) return null;
+  const n = parseNum(raw);
+  if (n == null) return null;
+  return n;
+}}
+
+function renderFactors(text) {{
+  const root = document.getElementById('factor-bars');
+  root.innerHTML = '';
+  const rows = [
+    {{ key: 'share_factor_momentum', label: 'momentum' }},
+    {{ key: 'share_factor_mean_reversion', label: 'mean reversion' }},
+    {{ key: 'share_factor_low_vol', label: 'low-vol' }},
+    {{ key: 'share_factor_volume', label: 'volume' }},
+  ];
+  const any = rows.some(r => factorBarValue(r.key) != null);
+  if (!any) {{
+    factorStats.textContent = '-';
+    root.innerHTML = `<div class="sub">factor_attribution_summary.txt</div>`;
+    return;
+  }}
+  const avgSel = (factorKv || {{}})['avg_selected_symbols'];
+  factorStats.textContent = avgSel ? `${{text.avg_selected_symbols}}: ${{Number(avgSel).toFixed(2)}}` : '';
+  rows.forEach(r => {{
+    const v = factorBarValue(r.key);
+    if (v == null) return;
+    const pct = (v * 100).toFixed(1) + '%';
+    const el = document.createElement('div');
+    el.className = 'bar-row';
+    el.innerHTML = `<div class="sub">${{r.label}}</div><div class="bar-track"><div class="bar-fill" style="width:${{Math.max(0, Math.min(100, v*100))}}%"></div></div><div style="text-align:right; font-variant-numeric: tabular-nums;">${{pct}}</div>`;
+    root.appendChild(el);
+  }});
+}}
+
+function renderKpis(text) {{
+  const kv = summaryKv || {{}};
+  const startEq = parseNum(kv.start_equity);
+  const endEq = parseNum(kv.end_equity);
+  const pnl = parseNum(kv.pnl);
+  const pnlRatio = parseNum(kv.pnl_ratio);
+  const dd = parseNum(kv.max_drawdown);
+  const cagr = parseNum(kv.cagr);
+  const sharpe = parseNum(kv.sharpe);
+  const tradesN = parseNum(kv.trades);
+  const rejN = parseNum(kv.rejections);
+
+  const items = [
+    {{ k: text.kpi_start_equity, v: fmtMoney(startEq), cls: '' }},
+    {{ k: text.kpi_end_equity, v: fmtMoney(endEq), cls: '' }},
+    {{ k: text.kpi_pnl, v: fmtMoney(pnl), cls: pnl < 0 ? 'negative' : 'positive' }},
+    {{ k: text.kpi_pnl_ratio, v: fmtPct(pnlRatio), cls: pnlRatio < 0 ? 'negative' : 'positive' }},
+    {{ k: text.kpi_max_drawdown, v: fmtPct(dd), cls: 'negative' }},
+    {{ k: text.kpi_cagr, v: fmtPct(cagr), cls: cagr < 0 ? 'negative' : 'positive' }},
+    {{ k: text.kpi_sharpe, v: sharpe == null ? '-' : sharpe.toFixed(2), cls: '' }},
+    {{ k: text.kpi_trades, v: tradesN == null ? '-' : String(Math.round(tradesN)), cls: '' }},
+    {{ k: text.kpi_rejections, v: rejN == null ? '-' : String(Math.round(rejN)), cls: '' }},
+  ];
+  kpisEl.innerHTML = '';
+  items.forEach(it => {{
+    const el = document.createElement('div');
+    el.className = 'kpi';
+    el.innerHTML = `<div class="k">${{it.k}}</div><div class="v ${{it.cls}}">${{it.v}}</div>`;
+    kpisEl.appendChild(el);
+  }});
+
+  const markets = [...new Set(trades.map(t => t.market).filter(Boolean))].sort();
+  const fees = trades.reduce((a, t) => a + Number(t.fees || 0), 0);
+  tradeStats.textContent = `${{trades.length}} trades | fees=${{fees.toFixed(2)}} | mkts=${{markets.join(',')}}`;
+  metaChip.textContent = `${{labels.length}} days`;
+}}
+
+function setupFilters(text) {{
+  const prevMarket = marketSel.value || '__all__';
+  const prevSide = sideSel.value || '__all__';
+  const mkts = [...new Set(trades.map(t => t.market).filter(Boolean))].sort();
+  marketSel.innerHTML = '';
+  const optAll = document.createElement('option');
+  optAll.value = '__all__';
+  optAll.textContent = text.all;
+  marketSel.appendChild(optAll);
+  mkts.forEach(m => {{
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    marketSel.appendChild(opt);
+  }});
+  marketSel.value = mkts.includes(prevMarket) ? prevMarket : '__all__';
+
+  sideSel.innerHTML = '';
+  const sAll = document.createElement('option');
+  sAll.value = '__all__';
+  sAll.textContent = text.all;
+  sideSel.appendChild(sAll);
+  ['BUY','SELL'].forEach(s => {{
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    sideSel.appendChild(opt);
+  }});
+  sideSel.value = (prevSide === 'BUY' || prevSide === 'SELL') ? prevSide : '__all__';
+  symbolInput.placeholder = text.search + ' ' + text.symbol;
+
+  const optEquity = seriesSelect.querySelector('option[value="equity"]');
+  const optCash = seriesSelect.querySelector('option[value="cash"]');
+  const optGross = seriesSelect.querySelector('option[value="gross_exposure"]');
+  const optNet = seriesSelect.querySelector('option[value="net_exposure"]');
+  if (optEquity) optEquity.textContent = text.equity;
+  if (optCash) optCash.textContent = text.cash;
+  if (optGross) optGross.textContent = text.gross_exposure;
+  if (optNet) optNet.textContent = text.net_exposure;
+}}
+
+function updateTooltip(i, x, y, text) {{
+  if (i == null) {{
+    tooltip.style.display = 'none';
+    return;
+  }}
+  const date = labels[i] || '';
+  const v = points[i];
+  tooltip.style.display = 'block';
+  tooltip.innerHTML = `<div style="font-weight:800; margin-bottom:6px;">${{date}}</div><div class="sub">${{seriesLabel(seriesSelect.value, text)}}: <span style="font-weight:800; color: var(--ink);">${{fmtMoney(v)}}</span></div>`;
+  const pad = 12;
+  tooltip.style.left = Math.min(c.clientWidth - 10, Math.max(10, x + pad)) + 'px';
+  tooltip.style.top = Math.max(10, y + pad) + 'px';
+}}
+
+function attachChartHover() {{
+  const pad = 24;
+  const onMove = (ev) => {{
+    const rect = c.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    const w = c.clientWidth;
+    if (points.length <= 1) return;
+    const stepX = (w - pad * 2) / (points.length - 1);
+    const i = Math.max(0, Math.min(points.length - 1, Math.round((x - pad) / stepX)));
+    window.__hoverIndex = i;
+    updateTooltip(i, x, y, getText(langSwitch.value));
+    renderChart(getText(langSwitch.value));
+  }};
+  const onLeave = () => {{
+    window.__hoverIndex = null;
+    updateTooltip(null, 0, 0, getText(langSwitch.value));
+    renderChart(getText(langSwitch.value));
+  }};
+  c.addEventListener('mousemove', onMove);
+  c.addEventListener('mouseleave', onLeave);
+  c.addEventListener('touchstart', (e) => {{
+    if (!e.touches || e.touches.length === 0) return;
+    onMove(e.touches[0]);
+  }}, {{ passive: true }});
+  c.addEventListener('touchmove', (e) => {{
+    if (!e.touches || e.touches.length === 0) return;
+    onMove(e.touches[0]);
+  }}, {{ passive: true }});
+  c.addEventListener('touchend', onLeave, {{ passive: true }});
 }}
 
 function applyLanguage(lang) {{
@@ -274,6 +735,8 @@ function applyLanguage(lang) {{
   document.getElementById('title').textContent = text.title;
   document.getElementById('subtitle').textContent = text.subtitle;
   document.getElementById('generated-from').textContent = text.generated_from;
+  document.getElementById('overview').textContent = text.overview;
+  document.getElementById('series-label').textContent = text.series;
   document.getElementById('equity-curve').textContent = text.equity_curve;
   document.getElementById('run-summary').textContent = text.run_summary;
   document.getElementById('recent-trades').textContent = text.recent_trades;
@@ -283,12 +746,28 @@ function applyLanguage(lang) {{
   document.getElementById('th-side').textContent = text.side;
   document.getElementById('th-qty').textContent = text.qty;
   document.getElementById('th-price').textContent = text.price;
+  document.getElementById('th-fees').textContent = text.fees;
+
+  document.getElementById('rejections-title').textContent = text.rejections;
+  document.getElementById('rej-th-date').textContent = text.date;
+  document.getElementById('rej-th-market').textContent = text.market;
+  document.getElementById('rej-th-symbol').textContent = text.symbol;
+  document.getElementById('rej-th-side').textContent = text.side;
+  document.getElementById('rej-th-qty').textContent = text.qty;
+  document.getElementById('rej-th-reason').textContent = text.reason;
+
+  document.getElementById('factors-title').textContent = text.factors;
+
+  setupFilters(text);
+  renderKpis(text);
   renderChart(text);
   renderTrades(text);
+  renderRejections();
+  renderFactors(text);
 }}
 
 function parseCsv(text) {{
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  const lines = text.trim().split(/\\r?\\n/).filter(Boolean);
   if (lines.length < 2) return [];
   const headers = lines[0].split(',');
   return lines.slice(1).map((line) => {{
@@ -301,20 +780,31 @@ function parseCsv(text) {{
 
 async function refreshFromFiles() {{
   try {{
-    const [summaryResp, equityResp, tradesResp] = await Promise.all([
+    const [summaryResp, equityResp, tradesResp, rejResp, factorResp] = await Promise.all([
       fetch('./summary.txt', {{ cache: 'no-store' }}),
       fetch('./equity_curve.csv', {{ cache: 'no-store' }}),
       fetch('./trades.csv', {{ cache: 'no-store' }}),
+      fetch('./rejections.csv', {{ cache: 'no-store' }}),
+      fetch('./factor_attribution_summary.txt', {{ cache: 'no-store' }}),
     ]);
 
     if (summaryResp.ok) {{
-      summaryBlock.textContent = await summaryResp.text();
+      const s = await summaryResp.text();
+      summaryBlock.textContent = s;
+      summaryKv = parseKv(s);
     }}
     if (equityResp.ok) {{
       const equityText = await equityResp.text();
-      const equityRows = parseCsv(equityText);
-      labels = equityRows.map((r) => r.date || '');
-      points = equityRows.map((r) => Number(r.equity || 0));
+      const rows = parseCsv(equityText);
+      equityRows = rows.map(r => ({{
+        date: r.date || '',
+        equity: Number(r.equity || 0),
+        cash: Number(r.cash || 0),
+        gross_exposure: Number(r.gross_exposure || 0),
+        net_exposure: Number(r.net_exposure || 0),
+      }}));
+      labels = equityRows.map(r => r.date || '');
+      points = extractSeries(seriesSelect.value);
     }}
     if (tradesResp.ok) {{
       const tradesText = await tradesResp.text();
@@ -326,13 +816,34 @@ async function refreshFromFiles() {{
         side: r.side || '',
         qty: Number(r.qty || 0),
         price: Number(r.price || 0),
+        fees: Number(r.fees || 0),
       }}));
     }}
+    if (rejResp.ok) {{
+      const rejText = await rejResp.text();
+      const rejRows = parseCsv(rejText);
+      rejections = rejRows.map((r) => ({{
+        date: r.date || '',
+        market: r.market || '',
+        symbol: r.symbol || '',
+        side: r.side || '',
+        qty: Number(r.qty || 0),
+        reason: r.reason || '',
+      }}));
+    }}
+    if (factorResp.ok) {{
+      const f = await factorResp.text();
+      factorKv = parseKv(f);
+    }}
 
-    liveStatus.textContent = 'live refresh: on';
+    const t = getText(langSwitch.value);
+    liveStatus.textContent = t.live_on;
+    liveDot.classList.add('ok');
     applyLanguage(langSwitch.value);
   }} catch (e) {{
-    liveStatus.textContent = 'live refresh: fallback';
+    const t = getText(langSwitch.value);
+    liveStatus.textContent = t.live_fallback;
+    liveDot.classList.remove('ok');
   }}
 }}
 
@@ -344,7 +855,18 @@ langSwitch.value = activeLang;
 langSwitch.addEventListener('change', (event) => {{
   applyLanguage(event.target.value);
 }});
+seriesSelect.addEventListener('change', () => {{
+  points = extractSeries(seriesSelect.value);
+  applyLanguage(langSwitch.value);
+}});
+symbolInput.addEventListener('input', () => applyLanguage(langSwitch.value));
+marketSel.addEventListener('change', () => applyLanguage(langSwitch.value));
+sideSel.addEventListener('change', () => applyLanguage(langSwitch.value));
+
 window.addEventListener('resize', () => applyLanguage(langSwitch.value));
+liveStatus.textContent = getText(activeLang).live_init;
+attachChartHover();
+points = extractSeries(seriesSelect.value);
 applyLanguage(activeLang);
 setInterval(refreshFromFiles, 10000);
 refreshFromFiles();
@@ -356,6 +878,8 @@ refreshFromFiles();
         title = text.title,
         subtitle = text.subtitle,
         generated_from = text.generated_from,
+        overview = text.overview,
+        series = text.series,
         equity_curve = text.equity_curve,
         run_summary = text.run_summary,
         recent_trades = text.recent_trades,
@@ -365,10 +889,16 @@ refreshFromFiles();
         side = text.side,
         qty = text.qty,
         price = text.price,
+        fees = text.fees,
+        rejections = text.rejections,
+        reason = text.reason,
+        factors = text.factors,
         summary_html = summary_html,
-        labels_json = labels_json,
-        points_json = points_json,
+        equity_rows_json = equity_rows_json,
         trade_json = trade_json,
+        rejection_json = rejection_json,
+        summary_kv_json = summary_kv_json,
+        factor_kv_json = factor_kv_json,
         i18n_json = i18n_json,
         default_lang_json = default_lang_json,
     );
@@ -405,7 +935,16 @@ fn read_equity_rows(path: &Path) -> Result<Vec<EquityRow>> {
         let rec = rec?;
         let date = rec.get(0).unwrap_or_default().to_string();
         let equity = rec.get(1).unwrap_or("0").parse::<f64>().unwrap_or(0.0);
-        rows.push(EquityRow { date, equity });
+        let cash = rec.get(2).unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let gross_exposure = rec.get(3).unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let net_exposure = rec.get(4).unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        rows.push(EquityRow {
+            date,
+            equity,
+            cash,
+            gross_exposure,
+            net_exposure,
+        });
     }
     Ok(rows)
 }
@@ -425,9 +964,48 @@ fn read_trade_rows(path: &Path) -> Result<Vec<TradeRow>> {
             side: rec.get(3).unwrap_or_default().to_string(),
             qty: rec.get(4).unwrap_or("0").parse::<i64>().unwrap_or(0),
             price: rec.get(5).unwrap_or("0").parse::<f64>().unwrap_or(0.0),
+            fees: rec.get(6).unwrap_or("0").parse::<f64>().unwrap_or(0.0),
         });
     }
     Ok(rows)
+}
+
+fn read_rejection_rows(path: &Path) -> Result<Vec<RejectionRow>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut rows = Vec::new();
+    let mut rdr = csv::Reader::from_path(path)?;
+    for rec in rdr.records() {
+        let rec = rec?;
+        rows.push(RejectionRow {
+            date: rec.get(0).unwrap_or_default().to_string(),
+            market: rec.get(1).unwrap_or_default().to_string(),
+            symbol: rec.get(2).unwrap_or_default().to_string(),
+            side: rec.get(3).unwrap_or_default().to_string(),
+            qty: rec.get(4).unwrap_or("0").parse::<i64>().unwrap_or(0),
+            reason: rec.get(5).unwrap_or_default().to_string(),
+        });
+    }
+    Ok(rows)
+}
+
+fn parse_kv_lines(text: &str) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        map.insert(
+            k.trim().to_string(),
+            serde_json::Value::String(v.trim().to_string()),
+        );
+    }
+    serde_json::Value::Object(map)
 }
 
 #[cfg(test)]
