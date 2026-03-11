@@ -3,10 +3,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tar::Archive;
 use tar::Builder;
 
 #[derive(Debug, Clone)]
@@ -15,14 +17,14 @@ pub struct BundleRequest {
     pub bundle_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleFile {
     pub rel_path: String,
     pub bytes: u64,
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleManifest {
     pub created_at_utc: String,
     pub output_dir: String,
@@ -119,6 +121,111 @@ pub fn create_run_bundle(req: &BundleRequest) -> Result<BundleReport> {
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct BundleVerifyReport {
+    pub manifest: BundleManifest,
+    pub checked_files: usize,
+}
+
+pub fn verify_run_bundle(bundle_path: impl AsRef<Path>) -> Result<BundleVerifyReport> {
+    let bundle_path = bundle_path.as_ref();
+    let (manifest, file_bytes) = read_manifest_and_file_bytes(bundle_path)?;
+
+    let mut checked = 0usize;
+    for item in &manifest.files {
+        let key = format!("bundle/files/{}", item.rel_path);
+        let data = file_bytes.get(&key).ok_or_else(|| {
+            anyhow!(
+                "bundle missing file '{}' referenced in manifest",
+                item.rel_path
+            )
+        })?;
+        if data.len() as u64 != item.bytes {
+            return Err(anyhow!(
+                "bundle file size mismatch for '{}': expected {} got {}",
+                item.rel_path,
+                item.bytes,
+                data.len()
+            ));
+        }
+        let got = format!("{:x}", Sha256::digest(data));
+        if got != item.sha256 {
+            return Err(anyhow!(
+                "bundle sha256 mismatch for '{}': expected {} got {}",
+                item.rel_path,
+                item.sha256,
+                got
+            ));
+        }
+        checked += 1;
+    }
+
+    Ok(BundleVerifyReport {
+        manifest,
+        checked_files: checked,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct BundleExtractRequest {
+    pub bundle_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub force: bool,
+}
+
+pub fn extract_run_bundle(req: &BundleExtractRequest) -> Result<()> {
+    // Safety: verify first, then extract only bundle/files/* into output_dir.
+    let verify = verify_run_bundle(&req.bundle_path)?;
+    if verify.checked_files == 0 {
+        return Err(anyhow!("bundle contains no files"));
+    }
+
+    fs::create_dir_all(&req.output_dir).with_context(|| {
+        format!(
+            "create extract output dir failed: {}",
+            req.output_dir.display()
+        )
+    })?;
+
+    let f = File::open(&req.bundle_path).with_context(|| {
+        format!(
+            "open bundle for extract failed: {}",
+            req.bundle_path.display()
+        )
+    })?;
+    let dec = GzDecoder::new(f);
+    let mut ar = Archive::new(dec);
+
+    for entry in ar.entries().context("read bundle tar entries")? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        let path_str = path.to_string_lossy();
+        if !path_str.starts_with("bundle/files/") {
+            continue;
+        }
+        let rel = path_str.trim_start_matches("bundle/files/");
+        if rel.is_empty() {
+            continue;
+        }
+        let safe_rel = sanitize_rel_path(rel)?;
+        let out_path = req.output_dir.join(&safe_rel);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if out_path.exists() && !req.force {
+            return Err(anyhow!(
+                "refusing to overwrite existing file (pass --force): {}",
+                out_path.display()
+            ));
+        }
+        entry
+            .unpack(&out_path)
+            .with_context(|| format!("extract failed: {} -> {}", path_str, out_path.display()))?;
+    }
+
+    Ok(())
+}
+
 fn write_bundle(output_dir: &Path, bundle_path: &Path, manifest: &BundleManifest) -> Result<()> {
     let f = File::create(bundle_path)
         .with_context(|| format!("create bundle failed: {}", bundle_path.display()))?;
@@ -206,11 +313,65 @@ fn hash_file(path: &Path) -> Result<(u64, String)> {
     Ok((total, format!("{:x}", h.finalize())))
 }
 
+fn sanitize_rel_path(p: &str) -> Result<PathBuf> {
+    let mut out = PathBuf::new();
+    for comp in Path::new(p).components() {
+        match comp {
+            std::path::Component::Normal(c) => out.push(c),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(anyhow!("unsafe path in bundle: '{p}'"));
+            }
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(anyhow!("empty path in bundle"));
+    }
+    Ok(out)
+}
+
+fn read_manifest_and_file_bytes(
+    bundle_path: &Path,
+) -> Result<(BundleManifest, std::collections::HashMap<String, Vec<u8>>)> {
+    let f = File::open(bundle_path)
+        .with_context(|| format!("open bundle failed: {}", bundle_path.display()))?;
+    let dec = GzDecoder::new(f);
+    let mut ar = Archive::new(dec);
+
+    let mut manifest_bytes: Option<Vec<u8>> = None;
+    let mut file_bytes: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+
+    for entry in ar.entries().context("read tar entries")? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        let p = path.to_string_lossy().to_string();
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf)?;
+        if p == "bundle/manifest.json" {
+            manifest_bytes = Some(buf);
+            continue;
+        }
+        if p.starts_with("bundle/files/") {
+            file_bytes.insert(p, buf);
+        }
+    }
+
+    let manifest_bytes =
+        manifest_bytes.ok_or_else(|| anyhow!("bundle missing bundle/manifest.json"))?;
+    let manifest: BundleManifest =
+        serde_json::from_slice(&manifest_bytes).context("parse bundle manifest json")?;
+    Ok((manifest, file_bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::{create_run_bundle, BundleRequest};
+    use super::{
+        create_run_bundle, extract_run_bundle, verify_run_bundle, BundleExtractRequest,
+        BundleRequest,
+    };
 
     #[test]
     fn bundle_writes_tar_gz_with_manifest() {
@@ -229,5 +390,33 @@ mod tests {
         assert!(report.bundle_path.exists());
         let bytes = fs::metadata(&bundle).expect("stat").len();
         assert!(bytes > 50);
+    }
+
+    #[test]
+    fn bundle_verify_and_extract_work() {
+        let dir = std::env::temp_dir().join("pqbot_bundle_test2");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(dir.join("summary.txt"), "hello").expect("write");
+        fs::write(dir.join("dashboard.html"), "<html/>").expect("write");
+
+        let bundle = dir.join("out.tar.gz");
+        let _ = create_run_bundle(&BundleRequest {
+            output_dir: dir.clone(),
+            bundle_path: bundle.clone(),
+        })
+        .expect("bundle");
+        let verify = verify_run_bundle(&bundle).expect("verify");
+        assert!(verify.checked_files >= 2);
+
+        let out = dir.join("extract");
+        extract_run_bundle(&BundleExtractRequest {
+            bundle_path: bundle,
+            output_dir: out.clone(),
+            force: false,
+        })
+        .expect("extract");
+        assert!(out.join("summary.txt").exists());
+        assert!(out.join("dashboard.html").exists());
     }
 }

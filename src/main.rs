@@ -279,6 +279,18 @@ enum Command {
         #[arg(long, default_value = "")]
         bundle_path: String,
     },
+    BundleVerify {
+        #[arg(long)]
+        bundle_path: String,
+    },
+    BundleExtract {
+        #[arg(long)]
+        bundle_path: String,
+        #[arg(long)]
+        output_dir: String,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -499,6 +511,12 @@ fn main() -> Result<()> {
             output_dir,
             bundle_path,
         } => bundle_command(&output_dir, &bundle_path),
+        Command::BundleVerify { bundle_path } => bundle_verify_command(&bundle_path),
+        Command::BundleExtract {
+            bundle_path,
+            output_dir,
+            force,
+        } => bundle_extract_command(&bundle_path, &output_dir, force),
     }
 }
 
@@ -564,6 +582,29 @@ fn bundle_command(output_dir: &str, bundle_path: &str) -> Result<()> {
         report.manifest.files.len(),
         report.manifest.missing.len()
     );
+    Ok(())
+}
+
+fn bundle_verify_command(bundle_path: &str) -> Result<()> {
+    let report = private_quant_bot::bundle::verify_run_bundle(bundle_path)?;
+    println!("bundle verified: {}", bundle_path);
+    println!(
+        "checked_files={} missing_in_manifest={}",
+        report.checked_files,
+        report.manifest.missing.len()
+    );
+    Ok(())
+}
+
+fn bundle_extract_command(bundle_path: &str, output_dir: &str, force: bool) -> Result<()> {
+    private_quant_bot::bundle::extract_run_bundle(
+        &private_quant_bot::bundle::BundleExtractRequest {
+            bundle_path: PathBuf::from(bundle_path),
+            output_dir: PathBuf::from(output_dir),
+            force,
+        },
+    )?;
+    println!("bundle extracted: {} -> {}", bundle_path, output_dir);
     Ok(())
 }
 

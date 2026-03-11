@@ -85,6 +85,18 @@ Expected:
 
 - `outputs_rust/run_bundle_<timestamp>.tar.gz`
 
+Verify:
+
+```bash
+cargo run -- bundle-verify --bundle-path outputs_rust/run_bundle_<timestamp>.tar.gz
+```
+
+Extract:
+
+```bash
+cargo run -- bundle-extract --bundle-path outputs_rust/run_bundle_<timestamp>.tar.gz --output-dir outputs_rust/unpacked --force
+```
+
 ## Scripts
 
 Runnable helpers:

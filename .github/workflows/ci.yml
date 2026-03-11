@@ -116,4 +116,6 @@ jobs:
       - name: Smoke Run Bundle
         run: |
           cargo run -- bundle --output-dir outputs_rust_ci
-          ls -1 outputs_rust_ci/run_bundle_*.tar.gz | head -n 1
+          BUNDLE="$(ls -1 outputs_rust_ci/run_bundle_*.tar.gz | head -n 1)"
+          test -n "$BUNDLE"
+          cargo run -- bundle-verify --bundle-path "$BUNDLE"

@@ -183,6 +183,18 @@ Create a single `.tar.gz` containing the key run artifacts plus SHA256 manifest:
 cargo run -- bundle --output-dir outputs_rust
 ```
 
+Verify a bundle:
+
+```bash
+cargo run -- bundle-verify --bundle-path outputs_rust/run_bundle_<timestamp>.tar.gz
+```
+
+Extract a bundle to a directory (verifies first):
+
+```bash
+cargo run -- bundle-extract --bundle-path outputs_rust/run_bundle_<timestamp>.tar.gz --output-dir outputs_rust/unpacked --force
+```
+
 ## Strategy plugin catalog
 
 ```bash
