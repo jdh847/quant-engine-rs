@@ -991,6 +991,9 @@ th {{ color: var(--muted); font-weight: 600; }}
         <label class="pill"><span id="strategy-market-label">{market}</span>
           <select id="strategy-market-select" class="select"></select>
         </label>
+        <label class="pill"><span id="strategy-plugin-label">{plugin}</span>
+          <select id="strategy-plugin-select" class="select"></select>
+        </label>
         <label class="pill"><span id="strategy-time-label">{time_range}</span>
           <select id="strategy-time-select" class="select">
             <option value="ALL">{all_time}</option>
@@ -1731,7 +1734,9 @@ function renderRecentCompare(text) {{
 
 function renderStrategyComparison(text) {{
   const marketSelect = document.getElementById('strategy-market-select');
+  const pluginSelect = document.getElementById('strategy-plugin-select');
   const prevMarket = marketSelect.value || 'ALL';
+  const prevPlugin = pluginSelect.value || 'ALL';
   const availableMarkets = [...new Set((registryRows || []).flatMap((r) => splitMarkets(r.markets)))].sort();
   const marketOptions = ['ALL', ...availableMarkets];
   marketSelect.innerHTML = marketOptions
@@ -1740,10 +1745,22 @@ function renderStrategyComparison(text) {{
   marketSelect.value = marketOptions.includes(prevMarket) ? prevMarket : 'ALL';
 
   const selectedMarket = marketSelect.value || 'ALL';
+  const marketScopedRows = (registryRows || []).filter((r) => inMarketRange(r, selectedMarket));
+  const availablePlugins = [...new Set(marketScopedRows
+    .map((r) => String(r.strategy_plugin || '').trim())
+    .filter(Boolean))].sort();
+  const pluginOptions = ['ALL', ...availablePlugins];
+  pluginSelect.innerHTML = pluginOptions
+    .map((p) => `<option value="${{esc(p)}}">${{esc(p === 'ALL' ? text.all : p)}}</option>`)
+    .join('');
+  pluginSelect.value = pluginOptions.includes(prevPlugin) ? prevPlugin : 'ALL';
+
+  const selectedPlugin = pluginSelect.value || 'ALL';
   const selectedRange = document.getElementById('strategy-time-select').value || 'ALL';
   const filteredRegistryRows = (registryRows || [])
-    .filter((r) => inTimeRange(r.timestamp_utc, selectedRange))
-    .filter((r) => inMarketRange(r, selectedMarket));
+    .filter((r) => inMarketRange(r, selectedMarket))
+    .filter((r) => selectedPlugin === 'ALL' || (r.strategy_plugin || '') === selectedPlugin)
+    .filter((r) => inTimeRange(r.timestamp_utc, selectedRange));
   strategyCompareRows = buildStrategyCompare(filteredRegistryRows);
   const chart = document.getElementById('strategy-compare-chart');
   const body = document.getElementById('strategy-compare-rows');
@@ -1796,7 +1813,7 @@ function renderStrategyComparison(text) {{
 
   const combos = strategyCompareRows.length;
   const runs = filteredRegistryRows.filter((r) => r.strategy_plugin || r.portfolio_method).length;
-  stats.textContent = `${{runs}} runs | ${{combos}} combos | market=${{selectedMarket}} | range=${{selectedRange}}`;
+  stats.textContent = `${{runs}} runs | ${{combos}} combos | market=${{selectedMarket}} | plugin=${{selectedPlugin}} | range=${{selectedRange}}`;
 
   chart.querySelectorAll('[data-combo-key]').forEach((el) => {{
     el.addEventListener('click', () => {{
@@ -2249,6 +2266,7 @@ function applyLanguage(lang) {{
   document.getElementById('strategy-comparison-title').textContent = text.strategy_comparison;
   document.getElementById('top-runs-title').textContent = text.top_runs;
   document.getElementById('strategy-market-label').textContent = text.market;
+  document.getElementById('strategy-plugin-label').textContent = text.plugin;
   document.getElementById('strategy-time-label').textContent = text.time_range;
   document.getElementById('strategy-th-plugin').textContent = text.plugin;
   document.getElementById('strategy-th-method').textContent = text.method;
@@ -2605,6 +2623,7 @@ document.getElementById('research-decay-metric').addEventListener('change', () =
 document.getElementById('research-rolling-horizon-select').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
 document.getElementById('research-regime-market').addEventListener('change', () => renderRegime(getText(langSwitch.value)));
 document.getElementById('strategy-market-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
+document.getElementById('strategy-plugin-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-time-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('leaderboard-source-select').addEventListener('change', () => renderPublicLeaderboard(getText(langSwitch.value)));
 document.getElementById('leaderboard-time-select').addEventListener('change', () => renderPublicLeaderboard(getText(langSwitch.value)));
@@ -3810,6 +3829,7 @@ mod tests {
         assert!(html.contains("Public Leaderboard"));
         assert!(html.contains("strategy-detail-rows"));
         assert!(html.contains("strategy-market-select"));
+        assert!(html.contains("strategy-plugin-select"));
         assert!(html.contains("compare-baseline-select"));
         assert!(html.contains("compare-candidate-select"));
         assert!(html.contains("compare-copy-btn"));
@@ -3821,6 +3841,7 @@ mod tests {
         assert!(html.contains("renderCompareShortcut"));
         assert!(html.contains("renderRecentCompare"));
         assert!(html.contains("inMarketRange"));
+        assert!(html.contains("plugin="));
         assert!(html.contains("market="));
         assert!(html.contains("cargo run --bin compare -- --baseline-dir"));
         assert!(html.contains("compare_demo/compare_report.html"));
