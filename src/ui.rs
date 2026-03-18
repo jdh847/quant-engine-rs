@@ -159,6 +159,7 @@ struct StrategyCompareRowUi {
 struct LeaderboardRowUi {
     rank: usize,
     source: String,
+    timestamp_utc: String,
     command: String,
     scenario: String,
     strategy_plugin: String,
@@ -167,6 +168,7 @@ struct LeaderboardRowUi {
     pnl_ratio: f64,
     max_drawdown: f64,
     sharpe: f64,
+    notes: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,6 +247,7 @@ struct DashboardI18nText {
     composite_score: String,
     run_details: String,
     selected_combo: String,
+    selected_entry: String,
     time_label: String,
     notes_label: String,
     research: String,
@@ -340,6 +343,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         composite_score: t.composite_score.to_string(),
         run_details: t.run_details.to_string(),
         selected_combo: t.selected_combo.to_string(),
+        selected_entry: t.selected_entry.to_string(),
         time_label: t.time_label.to_string(),
         notes_label: t.notes_label.to_string(),
         research: t.research.to_string(),
@@ -957,6 +961,29 @@ th {{ color: var(--muted); font-weight: 600; }}
           <tbody id="leaderboard-rows"></tbody>
         </table>
       </div>
+      <div style="margin-top:12px;">
+        <div class="toolbar">
+          <div class="subtle-title" id="leaderboard-details-title" style="margin:0;">{run_details}</div>
+          <span class="chip" id="leaderboard-selected-entry"></span>
+        </div>
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th id="leaderboard-detail-time">{time_label}</th>
+                <th id="leaderboard-detail-source">{source}</th>
+                <th id="leaderboard-detail-command">{command_label}</th>
+                <th id="leaderboard-detail-scenario">{scenario}</th>
+                <th id="leaderboard-detail-plugin">{plugin}</th>
+                <th id="leaderboard-detail-method">{method}</th>
+                <th id="leaderboard-detail-score">{score}</th>
+                <th id="leaderboard-detail-notes">{notes_label}</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-detail-rows"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -983,6 +1010,7 @@ const leaderboardRefreshPath = {leaderboard_refresh_path_json};
 const i18n = {i18n_json};
 const defaultLang = {default_lang_json};
 let strategySelectionKey = '';
+let leaderboardSelectionKey = '';
 
 const c = document.getElementById('chart');
 const ctx = c.getContext('2d');
@@ -1312,6 +1340,17 @@ function comboKey(plugin, method) {{
   return (plugin || '-') + '|' + (method || '-');
 }}
 
+function leaderboardKey(row) {{
+  return [
+    row.rank || 0,
+    row.source || '',
+    row.command || '',
+    row.scenario || '',
+    row.strategy_plugin || '',
+    row.portfolio_method || '',
+  ].join('|');
+}}
+
 function parseLeaderboardRows(rows) {{
   return (rows || []).map((r) => ({{
     rank: Number(r.rank || 0),
@@ -1443,9 +1482,23 @@ function renderPublicLeaderboard(text) {{
   const filtered = (leaderboardRows || [])
     .filter((r) => selected === 'ALL' || r.source === selected)
     .filter((r) => selectedRange === 'ALL' ? true : inTimeRange(r.timestamp_utc, selectedRange));
-  document.getElementById('leaderboard-rows').innerHTML = filtered.length === 0
+  const body = document.getElementById('leaderboard-rows');
+  const detailBody = document.getElementById('leaderboard-detail-rows');
+  const selectedChip = document.getElementById('leaderboard-selected-entry');
+  if (filtered.length > 0) {{
+    const validKeys = new Set(filtered.map((r) => leaderboardKey(r)));
+    if (!leaderboardSelectionKey || !validKeys.has(leaderboardSelectionKey)) {{
+      leaderboardSelectionKey = leaderboardKey(filtered[0]);
+    }}
+  }} else {{
+    leaderboardSelectionKey = '';
+  }}
+  body.innerHTML = filtered.length === 0
     ? `<tr><td colspan="9" class="sub">leaderboard_public.csv not found</td></tr>`
-    : filtered.slice(0, 12).map((r) => `<tr>
+    : filtered.slice(0, 12).map((r) => {{
+      const key = leaderboardKey(r);
+      const selectedCls = key === leaderboardSelectionKey ? 'selected-row' : '';
+      return `<tr class="clickable ${{selectedCls}}" data-leaderboard-key="${{esc(key)}}">
       <td>${{r.rank}}</td>
       <td>${{esc(r.source)}}</td>
       <td>${{esc(r.command)}}</td>
@@ -1455,10 +1508,36 @@ function renderPublicLeaderboard(text) {{
       <td>${{Number(r.score || 0).toFixed(3)}}</td>
       <td>${{fmtSignedPct(Number(r.pnl_ratio || 0))}}</td>
       <td>${{Number(r.sharpe || 0).toFixed(3)}}</td>
-    </tr>`).join('');
+    </tr>`;
+    }}).join('');
 
   document.getElementById('public-leaderboard-stats').textContent =
     `${{filtered.length}} rows | source=${{selected}} | range=${{selectedRange}}`;
+  body.querySelectorAll('[data-leaderboard-key]').forEach((el) => {{
+    el.addEventListener('click', () => {{
+      leaderboardSelectionKey = el.getAttribute('data-leaderboard-key') || '';
+      renderPublicLeaderboard(text);
+    }});
+  }});
+
+  const detailRows = filtered
+    .filter((r) => leaderboardKey(r) === leaderboardSelectionKey)
+    .slice(0, 1);
+  selectedChip.textContent = detailRows.length === 0
+    ? ''
+    : `${{text.selected_entry}}: #${{detailRows[0].rank}} / ${{detailRows[0].source}}`;
+  detailBody.innerHTML = detailRows.length === 0
+    ? `<tr><td colspan="8" class="sub">No leaderboard row selected</td></tr>`
+    : detailRows.map((r) => `<tr>
+      <td>${{esc(r.timestamp_utc || '-')}}</td>
+      <td>${{esc(r.source || '-')}}</td>
+      <td>${{esc(r.command || '-')}}</td>
+      <td>${{esc(r.scenario || '-')}}</td>
+      <td>${{esc(r.strategy_plugin || '-')}}</td>
+      <td>${{esc(r.portfolio_method || '-')}}</td>
+      <td>${{Number(r.score || 0).toFixed(3)}}</td>
+      <td>${{esc(r.notes || '-')}}</td>
+    </tr>`).join('');
 }}
 
 function researchCardValue(key) {{
@@ -1790,6 +1869,7 @@ function applyLanguage(lang) {{
   document.getElementById('public-leaderboard-title').textContent = text.public_leaderboard;
   document.getElementById('leaderboard-source-label').textContent = text.source;
   document.getElementById('leaderboard-time-label').textContent = text.time_range;
+  document.getElementById('leaderboard-details-title').textContent = text.run_details;
   document.getElementById('leaderboard-th-rank').textContent = text.rank;
   document.getElementById('leaderboard-th-source').textContent = text.source;
   document.getElementById('leaderboard-th-command').textContent = text.command_label;
@@ -1799,6 +1879,14 @@ function applyLanguage(lang) {{
   document.getElementById('leaderboard-th-score').textContent = text.score;
   document.getElementById('leaderboard-th-pnl').textContent = text.avg_pnl_short;
   document.getElementById('leaderboard-th-sharpe').textContent = text.avg_sharpe;
+  document.getElementById('leaderboard-detail-time').textContent = text.time_label;
+  document.getElementById('leaderboard-detail-source').textContent = text.source;
+  document.getElementById('leaderboard-detail-command').textContent = text.command_label;
+  document.getElementById('leaderboard-detail-scenario').textContent = text.scenario;
+  document.getElementById('leaderboard-detail-plugin').textContent = text.plugin;
+  document.getElementById('leaderboard-detail-method').textContent = text.method;
+  document.getElementById('leaderboard-detail-score').textContent = text.score;
+  document.getElementById('leaderboard-detail-notes').textContent = text.notes_label;
   const strategyTimeSelect = document.getElementById('strategy-time-select');
   const leaderboardTimeSelect = document.getElementById('leaderboard-time-select');
   const setRangeOptions = (sel) => {{
@@ -2841,6 +2929,7 @@ mod tests {
         assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("Public Leaderboard"));
         assert!(html.contains("strategy-detail-rows"));
+        assert!(html.contains("leaderboard-detail-rows"));
         assert!(html.contains("researchDecayRows"));
         assert!(html.contains("registryRows"));
         assert!(html.contains("leaderboardRows"));
