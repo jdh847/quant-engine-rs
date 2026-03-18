@@ -2380,19 +2380,26 @@ refreshFromFiles();
         &leaderboard_rows,
         &data_quality_rows,
     );
-    let cover_html = render_share_cover_dashboard(
-        language,
-        &summary_kv,
-        &research_summary_kv,
-        &strategy_compare_rows,
-        &leaderboard_rows,
-        &data_quality_rows,
-    );
-
     let mut dashboard_path = output_dir.join("dashboard.html");
     fs::write(&dashboard_path, html)?;
     fs::write(output_dir.join("dashboard_share.html"), share_html)?;
-    fs::write(output_dir.join("dashboard_cover.html"), cover_html)?;
+    for theme in [
+        ShareCoverTheme::Default,
+        ShareCoverTheme::Github,
+        ShareCoverTheme::X,
+        ShareCoverTheme::Xiaohongshu,
+    ] {
+        let cover_html = render_share_cover_dashboard(
+            language,
+            &summary_kv,
+            &research_summary_kv,
+            &strategy_compare_rows,
+            &leaderboard_rows,
+            &data_quality_rows,
+            theme,
+        );
+        fs::write(output_dir.join(theme.file_name()), cover_html)?;
+    }
     dashboard_path = fs::canonicalize(dashboard_path)?;
 
     Ok(dashboard_path)
@@ -2659,6 +2666,122 @@ if (printBtn) {{
     )
 }
 
+#[derive(Clone, Copy)]
+enum ShareCoverTheme {
+    Default,
+    Github,
+    X,
+    Xiaohongshu,
+}
+
+impl ShareCoverTheme {
+    fn file_name(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Default => "dashboard_cover.html",
+            ShareCoverTheme::Github => "dashboard_cover_github.html",
+            ShareCoverTheme::X => "dashboard_cover_x.html",
+            ShareCoverTheme::Xiaohongshu => "dashboard_cover_xiaohongshu.html",
+        }
+    }
+
+    fn badge(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Default => "Studio Cover",
+            ShareCoverTheme::Github => "GitHub Social Cover",
+            ShareCoverTheme::X => "X Wide Cover",
+            ShareCoverTheme::Xiaohongshu => "Xiaohongshu Poster",
+        }
+    }
+
+    fn page_size(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Default | ShareCoverTheme::Github => "1600px 900px",
+            ShareCoverTheme::X => "1500px 840px",
+            ShareCoverTheme::Xiaohongshu => "1242px 1660px",
+        }
+    }
+
+    fn max_width(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Default | ShareCoverTheme::Github => "1600px",
+            ShareCoverTheme::X => "1500px",
+            ShareCoverTheme::Xiaohongshu => "1242px",
+        }
+    }
+
+    fn min_height(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Xiaohongshu => "1660px",
+            ShareCoverTheme::X => "840px",
+            ShareCoverTheme::Default | ShareCoverTheme::Github => "900px",
+        }
+    }
+
+    fn padding(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Xiaohongshu => "56px",
+            ShareCoverTheme::X => "36px",
+            ShareCoverTheme::Default | ShareCoverTheme::Github => "40px",
+        }
+    }
+
+    fn hero_columns(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Xiaohongshu => "1fr",
+            ShareCoverTheme::X => "1.35fr .65fr",
+            ShareCoverTheme::Default | ShareCoverTheme::Github => "1.2fr .8fr",
+        }
+    }
+
+    fn grid_columns(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Xiaohongshu => "1fr",
+            _ => "repeat(3, minmax(0,1fr))",
+        }
+    }
+
+    fn title_size(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Xiaohongshu => "74px",
+            ShareCoverTheme::X => "52px",
+            ShareCoverTheme::Default | ShareCoverTheme::Github => "58px",
+        }
+    }
+
+    fn title_width(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Xiaohongshu => "none",
+            _ => "10ch",
+        }
+    }
+
+    fn background(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Default => {
+                "radial-gradient(900px 520px at 8% 12%, rgba(245,158,11,.32), transparent 55%), radial-gradient(900px 600px at 84% 18%, rgba(14,165,233,.30), transparent 55%), linear-gradient(135deg, #0f172a 0%, #102033 52%, #132a42 100%)"
+            }
+            ShareCoverTheme::Github => {
+                "radial-gradient(980px 560px at 10% 10%, rgba(34,197,94,.28), transparent 55%), radial-gradient(860px 600px at 88% 14%, rgba(59,130,246,.28), transparent 58%), linear-gradient(135deg, #0b1220 0%, #111827 48%, #18263d 100%)"
+            }
+            ShareCoverTheme::X => {
+                "radial-gradient(760px 420px at 8% 16%, rgba(249,115,22,.28), transparent 52%), radial-gradient(860px 480px at 80% 24%, rgba(236,72,153,.22), transparent 56%), linear-gradient(135deg, #111827 0%, #1f2937 46%, #0f172a 100%)"
+            }
+            ShareCoverTheme::Xiaohongshu => {
+                "radial-gradient(820px 580px at 14% 12%, rgba(251,113,133,.28), transparent 56%), radial-gradient(900px 640px at 82% 16%, rgba(45,212,191,.20), transparent 58%), linear-gradient(180deg, #1f1633 0%, #2d1f4d 42%, #111827 100%)"
+            }
+        }
+    }
+
+    fn footer_note(self) -> &'static str {
+        match self {
+            ShareCoverTheme::Default => "Open the full analytics in dashboard.html",
+            ShareCoverTheme::Github => "Built for README hero shots and repo social previews",
+            ShareCoverTheme::X => "Built for fast reposting and wide social previews",
+            ShareCoverTheme::Xiaohongshu => "Built for poster-style sharing and mobile screenshots",
+        }
+    }
+}
+
 fn render_share_cover_dashboard(
     language: Language,
     summary_kv: &serde_json::Value,
@@ -2666,6 +2789,7 @@ fn render_share_cover_dashboard(
     strategy_compare_rows: &[StrategyCompareRowUi],
     leaderboard_rows: &[LeaderboardRowUi],
     data_quality_rows: &[DataQualityRowUi],
+    theme: ShareCoverTheme,
 ) -> String {
     let text = dashboard_text(language);
     let pnl_ratio = kv_string(summary_kv, "pnl_ratio");
@@ -2723,28 +2847,25 @@ html, body {{ margin:0; padding:0; -webkit-print-color-adjust: exact; print-colo
 body {{
   font-family: "Avenir Next", "Helvetica Neue", sans-serif;
   color: #f8fafc;
-  background:
-    radial-gradient(900px 520px at 8% 12%, rgba(245,158,11,.32), transparent 55%),
-    radial-gradient(900px 600px at 84% 18%, rgba(14,165,233,.30), transparent 55%),
-    linear-gradient(135deg, #0f172a 0%, #102033 52%, #132a42 100%);
+  background: {background};
 }}
-.cover {{ width: 100%; min-height: 100vh; padding: 40px; display:grid; grid-template-rows: auto 1fr auto; gap: 22px; }}
+.cover {{ width: 100%; max-width: {max_width}; min-height: {min_height}; margin: 0 auto; padding: {padding}; display:grid; grid-template-rows: auto 1fr auto; gap: 22px; box-sizing: border-box; }}
 .chips {{ display:flex; gap:10px; flex-wrap:wrap; }}
 .chip {{ border:1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); border-radius:999px; padding:8px 12px; font-size:13px; }}
-.hero {{ display:grid; grid-template-columns: 1.2fr .8fr; gap: 22px; align-items:stretch; }}
-.title {{ font-size: 58px; font-weight: 900; line-height: .94; letter-spacing: -0.03em; max-width: 10ch; }}
+.hero {{ display:grid; grid-template-columns: {hero_columns}; gap: 22px; align-items:stretch; }}
+.title {{ font-size: {title_size}; font-weight: 900; line-height: .94; letter-spacing: -0.03em; max-width: {title_width}; }}
 .subtitle {{ margin-top: 16px; color: rgba(241,245,249,.76); font-size: 17px; max-width: 48ch; line-height: 1.45; }}
 .panel {{ background: rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); border-radius: 28px; padding: 24px; backdrop-filter: blur(10px); }}
 .metrics {{ display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px; }}
 .metric {{ background: rgba(255,255,255,.07); border-radius: 18px; padding: 16px; }}
 .k {{ color: rgba(241,245,249,.68); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
 .v {{ font-size: 28px; font-weight: 900; margin-top: 8px; }}
-.grid {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 18px; }}
+.grid {{ display:grid; grid-template-columns: {grid_columns}; gap: 18px; }}
 .label {{ color: rgba(241,245,249,.65); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px; }}
 .main {{ font-size: 20px; font-weight: 800; line-height: 1.3; }}
 .sub {{ color: rgba(241,245,249,.72); font-size: 14px; line-height: 1.45; margin-top: 8px; }}
 .footer {{ display:flex; justify-content:space-between; gap:14px; align-items:flex-end; color: rgba(241,245,249,.66); font-size: 13px; }}
-@page {{ size: 1600px 900px; margin: 0; }}
+@page {{ size: {page_size}; margin: 0; }}
 @media print {{
   .cover {{ min-height: auto; height: 100vh; }}
 }}
@@ -2758,9 +2879,10 @@ body {{
   <main class="cover">
     <div class="chips">
       <span class="chip">{subtitle}</span>
+      <span class="chip">{theme_badge}</span>
       <span class="chip">{markets}</span>
       <span class="chip">paper-only</span>
-      <span class="chip">dashboard_cover.html</span>
+      <span class="chip">{file_name}</span>
     </div>
 
     <section class="hero">
@@ -2798,19 +2920,30 @@ body {{
 
     <div class="footer">
       <div>{title} | Rust paper trading research stack</div>
-      <div>Open the full analytics in dashboard.html</div>
+      <div>{footer_note}</div>
     </div>
   </main>
 </body>
 </html>"#,
         lang = language.html_lang(),
+        background = theme.background(),
+        max_width = theme.max_width(),
+        min_height = theme.min_height(),
+        padding = theme.padding(),
+        hero_columns = theme.hero_columns(),
+        title_size = theme.title_size(),
+        title_width = theme.title_width(),
+        grid_columns = theme.grid_columns(),
+        page_size = theme.page_size(),
         title = escape_html(text.title),
         subtitle = escape_html(text.subtitle),
+        theme_badge = theme.badge(),
         markets = if markets.is_empty() {
             "US / A-share / JP".to_string()
         } else {
             escape_html(&markets)
         },
+        file_name = theme.file_name(),
         cover_sub = cover_sub,
         research = escape_html(text.research),
         rolling_ic = escape_html(text.rolling_ic),
@@ -2833,6 +2966,7 @@ body {{
         latest_rolling_factor = escape_html(&latest_rolling_factor),
         latest_rolling_horizon = escape_html(&latest_rolling_horizon),
         latest_rolling_ic = escape_html(&latest_rolling_ic),
+        footer_note = theme.footer_note(),
     )
 }
 
@@ -3218,6 +3352,13 @@ mod tests {
             fs::read_to_string(output_dir.join("dashboard_share.html")).expect("read share");
         let cover_html =
             fs::read_to_string(output_dir.join("dashboard_cover.html")).expect("read cover");
+        let github_cover_html = fs::read_to_string(output_dir.join("dashboard_cover_github.html"))
+            .expect("read github cover");
+        let x_cover_html =
+            fs::read_to_string(output_dir.join("dashboard_cover_x.html")).expect("read x cover");
+        let xiaohongshu_cover_html =
+            fs::read_to_string(output_dir.join("dashboard_cover_xiaohongshu.html"))
+                .expect("read xiaohongshu cover");
         assert!(html.contains("Research"));
         assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("Public Leaderboard"));
@@ -3240,7 +3381,18 @@ mod tests {
         assert!(share_html.contains("window.print()"));
         assert!(cover_html.contains("dashboard_cover.html"));
         assert!(cover_html.contains("paper-only"));
+        assert!(cover_html.contains("Studio Cover"));
         assert!(cover_html.contains("Open the full analytics in dashboard.html"));
+        assert!(github_cover_html.contains("dashboard_cover_github.html"));
+        assert!(github_cover_html.contains("GitHub Social Cover"));
+        assert!(github_cover_html.contains("Built for README hero shots and repo social previews"));
+        assert!(x_cover_html.contains("dashboard_cover_x.html"));
+        assert!(x_cover_html.contains("X Wide Cover"));
+        assert!(x_cover_html.contains("Built for fast reposting and wide social previews"));
+        assert!(xiaohongshu_cover_html.contains("dashboard_cover_xiaohongshu.html"));
+        assert!(xiaohongshu_cover_html.contains("Xiaohongshu Poster"));
+        assert!(xiaohongshu_cover_html
+            .contains("Built for poster-style sharing and mobile screenshots"));
     }
 
     fn make_temp_output_dir(prefix: &str) -> PathBuf {
