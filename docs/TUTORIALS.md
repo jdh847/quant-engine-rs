@@ -16,6 +16,7 @@ Expected:
 - `dashboard_share.html` for share/screenshot/export use
 - `dashboard_cover.html` plus `dashboard_cover_github.html` / `dashboard_cover_x.html` / `dashboard_cover_xiaohongshu.html` for repo/social cover-style export use
 - dashboard strategy section now includes a run-to-run compare shortcut that prepares a ready-to-run `cargo run --bin compare -- ...` command
+- when a compare report already exists nearby, dashboard also shows the latest discovered compare summary with direct HTML/JSON links
 - by default, `validate-data` is run and dashboard shows Data Quality (use `--skip-validate-data` to disable)
 - `config_used_redacted.toml` (best-effort redaction; avoid putting secrets in configs)
 

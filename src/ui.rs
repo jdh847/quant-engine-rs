@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use anyhow::Result;
@@ -121,6 +122,38 @@ struct ResearchReportCompat {
     factor_decay_rows: Vec<FactorDecayRowUi>,
     #[serde(default)]
     rolling_ic_rows: Vec<RollingIcRowUi>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CompareReportCompat {
+    #[serde(default)]
+    baseline_dir: String,
+    #[serde(default)]
+    candidate_dir: String,
+    #[serde(default)]
+    metric_rows: Vec<CompareFieldCompat>,
+    #[serde(default)]
+    audit_rows: Vec<CompareFieldCompat>,
+    #[serde(default)]
+    data_quality_rows: Vec<CompareFieldCompat>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CompareFieldCompat {
+    #[serde(default)]
+    changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RecentCompareUi {
+    output_dir: String,
+    html_href: String,
+    json_href: String,
+    baseline_dir: String,
+    candidate_dir: String,
+    metric_changes: usize,
+    audit_changes: usize,
+    data_quality_changes: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,6 +295,13 @@ struct DashboardI18nText {
     copy_command_label: String,
     compare_hint: String,
     compare_needs_two_runs: String,
+    recent_compare: String,
+    open_report_html: String,
+    open_report_json: String,
+    metric_changes_label: String,
+    audit_changes_label: String,
+    data_quality_changes_label: String,
+    compare_not_found: String,
     research: String,
     decay_overview: String,
     rolling_ic: String,
@@ -369,6 +409,13 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         copy_command_label: t.copy_command_label.to_string(),
         compare_hint: t.compare_hint.to_string(),
         compare_needs_two_runs: t.compare_needs_two_runs.to_string(),
+        recent_compare: t.recent_compare.to_string(),
+        open_report_html: t.open_report_html.to_string(),
+        open_report_json: t.open_report_json.to_string(),
+        metric_changes_label: t.metric_changes_label.to_string(),
+        audit_changes_label: t.audit_changes_label.to_string(),
+        data_quality_changes_label: t.data_quality_changes_label.to_string(),
+        compare_not_found: t.compare_not_found.to_string(),
         research: t.research.to_string(),
         decay_overview: t.decay_overview.to_string(),
         rolling_ic: t.rolling_ic.to_string(),
@@ -505,6 +552,7 @@ pub fn build_dashboard_with_language(
     let registry_rows = read_registry_rows(&registry_path)?;
     let strategy_compare_rows = build_strategy_compare_rows(&registry_rows);
     let leaderboard_rows = read_leaderboard_rows(&leaderboard_path)?;
+    let recent_compare = discover_recent_compare(output_dir);
 
     let trade_json = serde_json::to_string(&trade_rows)?;
     let rejection_json = serde_json::to_string(&rejection_rows)?;
@@ -521,6 +569,7 @@ pub fn build_dashboard_with_language(
     let data_quality_json = serde_json::to_string(&data_quality_rows)?;
     let audit_markets_json = serde_json::to_string(&audit_markets)?;
     let audit_config_sha_json = serde_json::to_string(&audit_config_sha)?;
+    let recent_compare_json = serde_json::to_string(&recent_compare)?;
     let registry_refresh_path_json = serde_json::to_string(&registry_refresh_path)?;
     let leaderboard_refresh_path_json = serde_json::to_string(&leaderboard_refresh_path)?;
     let text = dashboard_text(language);
@@ -657,9 +706,11 @@ th {{ color: var(--muted); font-weight: 600; }}
 .compare-kpi .delta-pos {{ color: #0f766e; font-weight: 800; }}
 .compare-kpi .delta-neg {{ color: #b91c1c; font-weight: 800; }}
 .action-btn {{ border: 1px solid rgba(15,23,42,0.12); background: rgba(255,255,255,0.92); border-radius: 10px; padding: 8px 12px; font-size: 13px; font-weight: 700; cursor: pointer; }}
+.action-btn.link {{ text-decoration:none; color: var(--ink); display:inline-flex; align-items:center; }}
 .action-btn:disabled {{ opacity: 0.55; cursor: default; }}
 .compare-setup {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }}
 .compare-block {{ margin-top:10px; }}
+.compare-links {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
@@ -989,6 +1040,10 @@ th {{ color: var(--muted); font-weight: 600; }}
           <div class="summary" id="compare-command-block">-</div>
         </div>
         <div class="sub" id="compare-hint" style="margin-top:8px;">{compare_hint}</div>
+        <div class="compare-block">
+          <div class="subtle-title" id="recent-compare-title">{recent_compare}</div>
+          <div class="table-card" id="recent-compare-block"></div>
+        </div>
       </div>
     </section>
 
@@ -1071,6 +1126,7 @@ let researchRollingRows = {research_rolling_json};
 let dataQualityRows = {data_quality_json};
 let auditMarkets = {audit_markets_json};
 let auditConfigSha = {audit_config_sha_json};
+let recentCompare = {recent_compare_json};
 const registryRefreshPath = {registry_refresh_path_json};
 const leaderboardRefreshPath = {leaderboard_refresh_path_json};
 const i18n = {i18n_json};
@@ -1594,6 +1650,31 @@ function renderCompareShortcut(text, availableRows, preferredRows) {{
       fallbackCopy();
     }}
   }};
+}}
+
+function renderRecentCompare(text) {{
+  const root = document.getElementById('recent-compare-block');
+  if (!root) return;
+  if (!recentCompare) {{
+    root.innerHTML = `<div class="summary">${{esc(text.compare_not_found)}}</div>`;
+    return;
+  }}
+  root.innerHTML = `
+    <div style="padding:12px 14px;">
+      <div class="sub"><strong>${{esc(text.baseline_run)}}:</strong> ${{esc(recentCompare.baseline_dir || '-')}}</div>
+      <div class="sub"><strong>${{esc(text.candidate_run)}}:</strong> ${{esc(recentCompare.candidate_dir || '-')}}</div>
+      <div class="sub"><strong>${{esc(text.output_dir_label)}}:</strong> ${{esc(recentCompare.output_dir || '-')}}</div>
+      <div class="sub" style="margin-top:8px;">
+        ${{esc(text.metric_changes_label)}}=${{Number(recentCompare.metric_changes || 0)}} |
+        ${{esc(text.audit_changes_label)}}=${{Number(recentCompare.audit_changes || 0)}} |
+        ${{esc(text.data_quality_changes_label)}}=${{Number(recentCompare.data_quality_changes || 0)}}
+      </div>
+      <div class="compare-links">
+        <a class="action-btn link" href="${{esc(recentCompare.html_href || '#')}}">${{esc(text.open_report_html)}}</a>
+        <a class="action-btn link" href="${{esc(recentCompare.json_href || '#')}}">${{esc(text.open_report_json)}}</a>
+      </div>
+    </div>
+  `;
 }}
 
 function renderStrategyComparison(text) {{
@@ -2126,6 +2207,7 @@ function applyLanguage(lang) {{
   document.getElementById('compare-command-label').textContent = text.command_label;
   document.getElementById('compare-copy-btn').textContent = text.copy_command_label;
   document.getElementById('compare-hint').textContent = text.compare_hint;
+  document.getElementById('recent-compare-title').textContent = text.recent_compare;
   document.getElementById('public-leaderboard-title').textContent = text.public_leaderboard;
   document.getElementById('leaderboard-source-label').textContent = text.source;
   document.getElementById('leaderboard-time-label').textContent = text.time_range;
@@ -2200,6 +2282,7 @@ function applyLanguage(lang) {{
   renderRejections();
   renderFactors(text);
   renderStrategyComparison(text);
+  renderRecentCompare(text);
   renderPublicLeaderboard(text);
   renderResearch(text);
   renderDataQuality();
@@ -2532,6 +2615,7 @@ refreshFromFiles();
         output_dir_label = text.output_dir_label,
         copy_command_label = text.copy_command_label,
         compare_hint = text.compare_hint,
+        recent_compare = text.recent_compare,
         research = text.research,
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
@@ -2562,6 +2646,7 @@ refreshFromFiles();
         data_quality_json = data_quality_json,
         audit_markets_json = audit_markets_json,
         audit_config_sha_json = audit_config_sha_json,
+        recent_compare_json = recent_compare_json,
         registry_refresh_path_json = registry_refresh_path_json,
         i18n_json = i18n_json,
         default_lang_json = default_lang_json,
@@ -3173,6 +3258,82 @@ fn kv_string(value: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
+fn discover_recent_compare(output_dir: &Path) -> Option<RecentCompareUi> {
+    let mut candidate_dirs = Vec::<PathBuf>::new();
+    if output_dir.join("compare_report.json").exists() {
+        candidate_dirs.push(output_dir.to_path_buf());
+    }
+    if let Ok(read_dir) = fs::read_dir(output_dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("compare_report.json").exists() {
+                candidate_dirs.push(path);
+            }
+        }
+    }
+    if let Some(parent) = output_dir.parent() {
+        if let Ok(read_dir) = fs::read_dir(parent) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.is_dir()
+                    && path.join("compare_report.json").exists()
+                    && !candidate_dirs.iter().any(|p| p == &path)
+                {
+                    candidate_dirs.push(path);
+                }
+            }
+        }
+    }
+
+    let latest_dir = candidate_dirs.into_iter().max_by_key(|dir| {
+        fs::metadata(dir.join("compare_report.json"))
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    })?;
+
+    let report_text = fs::read_to_string(latest_dir.join("compare_report.json")).ok()?;
+    let report: CompareReportCompat = serde_json::from_str(&report_text).ok()?;
+    Some(RecentCompareUi {
+        output_dir: latest_dir.display().to_string(),
+        html_href: relative_href(output_dir, &latest_dir.join("compare_report.html")),
+        json_href: relative_href(output_dir, &latest_dir.join("compare_report.json")),
+        baseline_dir: report.baseline_dir,
+        candidate_dir: report.candidate_dir,
+        metric_changes: report.metric_rows.iter().filter(|r| r.changed).count(),
+        audit_changes: report.audit_rows.iter().filter(|r| r.changed).count(),
+        data_quality_changes: report
+            .data_quality_rows
+            .iter()
+            .filter(|r| r.changed)
+            .count(),
+    })
+}
+
+fn relative_href(from_dir: &Path, to_path: &Path) -> String {
+    let from_components: Vec<_> = from_dir.components().collect();
+    let to_components: Vec<_> = to_path.components().collect();
+    let mut common = 0usize;
+    while common < from_components.len()
+        && common < to_components.len()
+        && from_components[common] == to_components[common]
+    {
+        common += 1;
+    }
+    let mut out = PathBuf::new();
+    for _ in common..from_components.len() {
+        out.push("..");
+    }
+    for comp in &to_components[common..] {
+        out.push(comp.as_os_str());
+    }
+    let s = out.to_string_lossy().replace('\\', "/");
+    if s.is_empty() {
+        ".".to_string()
+    } else {
+        s
+    }
+}
+
 fn read_equity_rows(path: &Path) -> Result<Vec<EquityRow>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -3539,6 +3700,24 @@ mod tests {
             "rank,source,timestamp_utc,command,scenario,strategy_plugin,portfolio_method,score,pnl_ratio,max_drawdown,sharpe,notes\n1,registry,2026-01-03T00:00:00Z,run,default,my_alpha,hrp,1.4567,0.1200,0.0400,1.5000,top row\n2,research,,research,walk_forward,my_alpha,risk_parity,1.2222,0.0900,0.0500,1.2000,research row\n",
         )
         .expect("write leaderboard");
+        let compare_dir = output_dir.join("compare_demo");
+        fs::create_dir_all(&compare_dir).expect("compare dir");
+        fs::write(
+            compare_dir.join("compare_report.json"),
+            r#"{
+  "baseline_dir":"outputs_rust/run_a",
+  "candidate_dir":"outputs_rust/run_b",
+  "metric_rows":[{"changed":true},{"changed":false}],
+  "audit_rows":[{"changed":true}],
+  "data_quality_rows":[{"changed":false},{"changed":true}]
+}"#,
+        )
+        .expect("write compare json");
+        fs::write(
+            compare_dir.join("compare_report.html"),
+            "<html><body>compare html</body></html>",
+        )
+        .expect("write compare html");
 
         let path =
             build_dashboard_with_language(&output_dir, Language::En).expect("build dashboard");
@@ -3561,12 +3740,16 @@ mod tests {
         assert!(html.contains("compare-baseline-select"));
         assert!(html.contains("compare-candidate-select"));
         assert!(html.contains("compare-copy-btn"));
+        assert!(html.contains("recent-compare-block"));
         assert!(html.contains("leaderboard-detail-rows"));
         assert!(html.contains("researchDecayRows"));
         assert!(html.contains("registryRows"));
         assert!(html.contains("leaderboardRows"));
         assert!(html.contains("renderCompareShortcut"));
+        assert!(html.contains("renderRecentCompare"));
         assert!(html.contains("cargo run --bin compare -- --baseline-dir"));
+        assert!(html.contains("compare_demo/compare_report.html"));
+        assert!(html.contains("Metric Changes"));
         assert!(html.contains("momentum"));
         assert!(html.contains("researchRollingRows"));
         assert!(html.contains("research-decay-chart"));
