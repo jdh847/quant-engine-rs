@@ -99,8 +99,23 @@ struct RollingIcRowUi {
     ic: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegimeSplitRowUi {
+    market: String,
+    regime_bucket: String,
+    observations: usize,
+    avg_factor_momentum: f64,
+    avg_factor_mean_reversion: f64,
+    avg_factor_low_vol: f64,
+    avg_factor_volume: f64,
+    avg_composite_alpha: f64,
+    avg_selected_symbols: f64,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ResearchReportCompat {
+    #[serde(default)]
+    regime_rows: Vec<RegimeSplitRowUi>,
     #[serde(default)]
     factor_decay_rows: Vec<FactorDecayRowUi>,
     #[serde(default)]
@@ -185,6 +200,7 @@ struct DashboardI18nText {
     research: String,
     decay_overview: String,
     rolling_ic: String,
+    regime_split: String,
     folds: String,
     avg_test_sharpe_short: String,
     best_decay: String,
@@ -194,6 +210,9 @@ struct DashboardI18nText {
     spread: String,
     scope: String,
     metric: String,
+    observations: String,
+    composite_alpha: String,
+    regime_bucket: String,
     avg_selected_symbols: String,
     start: String,
     end: String,
@@ -252,6 +271,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         research: t.research.to_string(),
         decay_overview: t.decay_overview.to_string(),
         rolling_ic: t.rolling_ic.to_string(),
+        regime_split: t.regime_split.to_string(),
         folds: t.folds.to_string(),
         avg_test_sharpe_short: t.avg_test_sharpe_short.to_string(),
         best_decay: t.best_decay.to_string(),
@@ -261,6 +281,9 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         spread: t.spread.to_string(),
         scope: t.scope.to_string(),
         metric: t.metric.to_string(),
+        observations: t.observations.to_string(),
+        composite_alpha: t.composite_alpha.to_string(),
+        regime_bucket: t.regime_bucket.to_string(),
         avg_selected_symbols: t.avg_selected_symbols.to_string(),
         start: t.start.to_string(),
         end: t.end.to_string(),
@@ -361,7 +384,8 @@ pub fn build_dashboard_with_language(
     let data_quality_html = escape_html(&data_quality_summary);
     let data_quality_rows = read_data_quality_rows(&data_quality_report_path)?;
     let (audit_config_sha, audit_markets) = read_audit_snapshot(&audit_json_path);
-    let (research_decay_rows, research_rolling_rows) = read_research_report(&research_json_path);
+    let (research_regime_rows, research_decay_rows, research_rolling_rows) =
+        read_research_report(&research_json_path);
 
     let trade_json = serde_json::to_string(&trade_rows)?;
     let rejection_json = serde_json::to_string(&rejection_rows)?;
@@ -369,6 +393,7 @@ pub fn build_dashboard_with_language(
     let summary_kv_json = serde_json::to_string(&summary_kv)?;
     let factor_kv_json = serde_json::to_string(&factor_kv)?;
     let research_summary_kv_json = serde_json::to_string(&research_summary_kv)?;
+    let research_regime_json = serde_json::to_string(&research_regime_rows)?;
     let research_decay_json = serde_json::to_string(&research_decay_rows)?;
     let research_rolling_json = serde_json::to_string(&research_rolling_rows)?;
     let data_quality_json = serde_json::to_string(&data_quality_rows)?;
@@ -488,6 +513,11 @@ th {{ color: var(--muted); font-weight: 600; }}
 .mini-toolbar {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }}
 .chart-shell {{ border: 1px solid rgba(15,23,42,0.08); border-radius: 14px; background: rgba(255,255,255,0.7); padding: 10px; min-height: 240px; }}
 .chart-shell svg {{ width: 100%; height: 220px; display:block; }}
+.regime-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; }}
+.regime-card {{ padding:14px; border-radius:16px; background:rgba(255,255,255,0.74); border:1px solid rgba(15,23,42,0.08); }}
+.regime-title {{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }}
+.regime-main {{ font-size:22px; font-weight:800; margin-bottom:8px; }}
+.regime-sub {{ font-size:13px; color:var(--muted); line-height:1.45; }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
@@ -699,6 +729,33 @@ th {{ color: var(--muted); font-weight: 600; }}
           </div>
         </div>
       </div>
+      <div style="margin-top: 12px;">
+        <div class="mini-toolbar">
+          <span class="subtle-title" id="regime-title">{regime_split}</span>
+          <label class="pill"><span id="regime-market-label">{market}</span>
+            <select id="research-regime-market" class="select"></select>
+          </label>
+        </div>
+        <div class="grid">
+          <div class="chart-shell">
+            <div id="research-regime-cards" class="regime-grid"></div>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th id="research-regime-bucket">{regime_bucket}</th>
+                  <th id="research-regime-obs">{observations}</th>
+                  <th id="research-regime-composite">{composite_alpha}</th>
+                  <th id="research-regime-momentum">{factors}</th>
+                  <th id="research-regime-low-vol">low-vol</th>
+                </tr>
+              </thead>
+              <tbody id="research-regime-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -711,6 +768,7 @@ let rejections = {rejection_json};
 let summaryKv = {summary_kv_json};
 let factorKv = {factor_kv_json};
 let researchSummaryKv = {research_summary_kv_json};
+let researchRegimeRows = {research_regime_json};
 let researchDecayRows = {research_decay_json};
 let researchRollingRows = {research_rolling_json};
 let dataQualityRows = {data_quality_json};
@@ -1044,6 +1102,40 @@ function renderResearchCharts(text) {{
     : `<div class="sub">rolling_ic.csv / research_report.json</div>`;
 }}
 
+function renderRegime(text) {{
+  const marketSel = document.getElementById('research-regime-market');
+  const prevMarket = marketSel.value || '';
+  const markets = [...new Set((researchRegimeRows || []).map((r) => r.market).filter(Boolean))].sort();
+  marketSel.innerHTML = markets.map((m) => `<option value="${{esc(m)}}">${{esc(m)}}</option>`).join('');
+  if (markets.length > 0) {{
+    marketSel.value = markets.includes(prevMarket) ? prevMarket : markets[0];
+  }}
+
+  const activeMarket = marketSel.value || markets[0] || '';
+  const rows = (researchRegimeRows || []).filter((r) => r.market === activeMarket);
+  const cards = document.getElementById('research-regime-cards');
+  const body = document.getElementById('research-regime-rows');
+  if (rows.length === 0) {{
+    cards.innerHTML = `<div class="sub">research_report.json</div>`;
+    body.innerHTML = `<tr><td colspan="5" class="sub">regime_split.csv / research_report.json</td></tr>`;
+    return;
+  }}
+
+  cards.innerHTML = rows.map((row) => `<div class="regime-card">
+    <div class="regime-title">${{esc(row.regime_bucket)}}</div>
+    <div class="regime-main">${{Number(row.avg_composite_alpha || 0).toFixed(3)}}</div>
+    <div class="regime-sub">${{esc(text.observations)}}=${{row.observations}} | momentum=${{Number(row.avg_factor_momentum || 0).toFixed(3)}} | low-vol=${{Number(row.avg_factor_low_vol || 0).toFixed(3)}}</div>
+  </div>`).join('');
+
+  body.innerHTML = rows.map((row) => `<tr>
+    <td>${{esc(row.regime_bucket)}}</td>
+    <td>${{row.observations}}</td>
+    <td>${{Number(row.avg_composite_alpha || 0).toFixed(3)}}</td>
+    <td>${{Number(row.avg_factor_momentum || 0).toFixed(3)}}</td>
+    <td>${{Number(row.avg_factor_low_vol || 0).toFixed(3)}}</td>
+  </tr>`).join('');
+}}
+
 function renderResearch(text) {{
   syncResearchControls(text);
   const kpis = document.getElementById('research-kpis');
@@ -1098,6 +1190,7 @@ function renderResearch(text) {{
   ].filter(Boolean);
   document.getElementById('research-stats').textContent = stats.join(' | ');
   renderResearchCharts(text);
+  renderRegime(text);
 }}
 
 function renderKpis(text) {{
@@ -1260,6 +1353,8 @@ function applyLanguage(lang) {{
   document.getElementById('decay-title').textContent = text.decay_overview;
   document.getElementById('rolling-chart-title').textContent = text.rolling_ic;
   document.getElementById('rolling-title').textContent = text.rolling_ic;
+  document.getElementById('regime-title').textContent = text.regime_split;
+  document.getElementById('regime-market-label').textContent = text.market;
   document.getElementById('research-decay-factor').textContent = text.factors;
   document.getElementById('research-decay-scope-th').textContent = text.scope;
   document.getElementById('research-decay-horizon').textContent = text.horizon_days;
@@ -1269,6 +1364,10 @@ function applyLanguage(lang) {{
   document.getElementById('research-rolling-factor').textContent = text.factors;
   document.getElementById('research-rolling-horizon').textContent = text.horizon_days;
   document.getElementById('research-rolling-ic').textContent = text.ic_short;
+  document.getElementById('research-regime-bucket').textContent = text.regime_bucket;
+  document.getElementById('research-regime-obs').textContent = text.observations;
+  document.getElementById('research-regime-composite').textContent = text.composite_alpha;
+  document.getElementById('research-regime-momentum').textContent = text.factors;
   const metricIcOpt = document.querySelector('#research-decay-metric option[value="ic"]');
   const metricSpreadOpt = document.querySelector('#research-decay-metric option[value="long_short_spread"]');
   if (metricIcOpt) metricIcOpt.textContent = text.ic_short;
@@ -1412,6 +1511,7 @@ async function refreshFromFiles() {{
       const t = await researchJsonSource.text();
       try {{
         const obj = JSON.parse(t);
+        researchRegimeRows = obj.regime_rows || [];
         researchDecayRows = obj.factor_decay_rows || [];
         researchRollingRows = obj.rolling_ic_rows || [];
       }} catch (e) {{}}
@@ -1530,6 +1630,7 @@ seriesSelect.addEventListener('change', () => {{
 document.getElementById('research-decay-scope').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
 document.getElementById('research-decay-metric').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
 document.getElementById('research-rolling-horizon-select').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
+document.getElementById('research-regime-market').addEventListener('change', () => renderRegime(getText(langSwitch.value)));
 symbolInput.addEventListener('input', () => applyLanguage(langSwitch.value));
 marketSel.addEventListener('change', () => applyLanguage(langSwitch.value));
 sideSel.addEventListener('change', () => applyLanguage(langSwitch.value));
@@ -1576,11 +1677,15 @@ refreshFromFiles();
         research = text.research,
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
+        regime_split = text.regime_split,
         horizon_days = text.horizon_days,
         ic_short = text.ic_short,
         spread = text.spread,
         scope = text.scope,
         metric = text.metric,
+        observations = text.observations,
+        composite_alpha = text.composite_alpha,
+        regime_bucket = text.regime_bucket,
         summary_html = summary_html,
         research_summary_html = research_summary_html,
         audit_html = audit_html,
@@ -1591,6 +1696,7 @@ refreshFromFiles();
         summary_kv_json = summary_kv_json,
         factor_kv_json = factor_kv_json,
         research_summary_kv_json = research_summary_kv_json,
+        research_regime_json = research_regime_json,
         research_decay_json = research_decay_json,
         research_rolling_json = research_rolling_json,
         data_quality_json = data_quality_json,
@@ -1821,12 +1927,22 @@ fn read_audit_snapshot(path: &Path) -> (String, Vec<AuditMarketUi>) {
     (snap.config_sha256, out)
 }
 
-fn read_research_report(path: &Path) -> (Vec<FactorDecayRowUi>, Vec<RollingIcRowUi>) {
+fn read_research_report(
+    path: &Path,
+) -> (
+    Vec<RegimeSplitRowUi>,
+    Vec<FactorDecayRowUi>,
+    Vec<RollingIcRowUi>,
+) {
     let Ok(s) = fs::read_to_string(path) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
     let report: ResearchReportCompat = serde_json::from_str(&s).unwrap_or_default();
-    (report.factor_decay_rows, report.rolling_ic_rows)
+    (
+        report.regime_rows,
+        report.factor_decay_rows,
+        report.rolling_ic_rows,
+    )
 }
 
 #[cfg(test)]
@@ -1883,6 +1999,9 @@ mod tests {
         fs::write(
             output_dir.join("research_report.json"),
             r#"{
+  "regime_rows":[
+    {"market":"US","regime_bucket":"trend_up_low_vol","observations":12,"avg_factor_momentum":0.12,"avg_factor_mean_reversion":-0.01,"avg_factor_low_vol":0.08,"avg_factor_volume":0.03,"avg_composite_alpha":0.09,"avg_selected_symbols":4.0}
+  ],
   "factor_decay_rows":[
     {"scope":"ALL","factor":"momentum","horizon_days":5,"observations":10,"ic":0.2222,"top_quintile_avg_return":0.01,"bottom_quintile_avg_return":-0.01,"long_short_spread":0.02}
   ],
@@ -1902,6 +2021,8 @@ mod tests {
         assert!(html.contains("researchRollingRows"));
         assert!(html.contains("research-decay-chart"));
         assert!(html.contains("research-rolling-chart"));
+        assert!(html.contains("research-regime-cards"));
+        assert!(html.contains("trend_up_low_vol"));
     }
 
     fn make_temp_output_dir(prefix: &str) -> PathBuf {
