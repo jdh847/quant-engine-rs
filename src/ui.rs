@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{dashboard_text, DashboardText, Language};
+use crate::registry::{infer_registry_root, read_run_registry, RunRegistryEntry};
 
 #[derive(Debug, Serialize)]
 struct EquityRow {
@@ -143,6 +144,17 @@ struct RejectionRow {
     reason: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct StrategyCompareRowUi {
+    strategy_plugin: String,
+    portfolio_method: String,
+    runs: usize,
+    avg_score: f64,
+    best_score: f64,
+    avg_pnl_ratio: f64,
+    avg_sharpe: f64,
+}
+
 #[derive(Debug, Serialize)]
 struct DashboardI18n {
     en: DashboardI18nText,
@@ -194,9 +206,19 @@ struct DashboardI18nText {
     qty: String,
     price: String,
     fees: String,
+    runs_label: String,
     rejections: String,
     reason: String,
     factors: String,
+    strategy_comparison: String,
+    plugin: String,
+    method: String,
+    avg_score: String,
+    best_score: String,
+    avg_pnl_short: String,
+    avg_sharpe: String,
+    top_runs: String,
+    composite_score: String,
     research: String,
     decay_overview: String,
     rolling_ic: String,
@@ -265,9 +287,19 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         qty: t.qty.to_string(),
         price: t.price.to_string(),
         fees: t.fees.to_string(),
+        runs_label: t.runs_label.to_string(),
         rejections: t.rejections.to_string(),
         reason: t.reason.to_string(),
         factors: t.factors.to_string(),
+        strategy_comparison: t.strategy_comparison.to_string(),
+        plugin: t.plugin.to_string(),
+        method: t.method.to_string(),
+        avg_score: t.avg_score.to_string(),
+        best_score: t.best_score.to_string(),
+        avg_pnl_short: t.avg_pnl_short.to_string(),
+        avg_sharpe: t.avg_sharpe.to_string(),
+        top_runs: t.top_runs.to_string(),
+        composite_score: t.composite_score.to_string(),
         research: t.research.to_string(),
         decay_overview: t.decay_overview.to_string(),
         rolling_ic: t.rolling_ic.to_string(),
@@ -310,6 +342,13 @@ pub fn build_dashboard_with_language(
     let rejections_path = output_dir.join("rejections.csv");
     let factor_summary_path = output_dir.join("factor_attribution_summary.txt");
     let audit_summary_path = output_dir.join("audit_snapshot_summary.txt");
+    let registry_root = infer_registry_root(output_dir);
+    let registry_path = registry_root.join("run_registry.csv");
+    let registry_refresh_path = if registry_root == output_dir {
+        "./run_registry.csv".to_string()
+    } else {
+        "../run_registry.csv".to_string()
+    };
     let research_summary_path = if output_dir.join("research_report_summary.txt").exists() {
         output_dir.join("research_report_summary.txt")
     } else if output_dir
@@ -386,6 +425,8 @@ pub fn build_dashboard_with_language(
     let (audit_config_sha, audit_markets) = read_audit_snapshot(&audit_json_path);
     let (research_regime_rows, research_decay_rows, research_rolling_rows) =
         read_research_report(&research_json_path);
+    let registry_rows = read_registry_rows(&registry_path)?;
+    let strategy_compare_rows = build_strategy_compare_rows(&registry_rows);
 
     let trade_json = serde_json::to_string(&trade_rows)?;
     let rejection_json = serde_json::to_string(&rejection_rows)?;
@@ -393,12 +434,15 @@ pub fn build_dashboard_with_language(
     let summary_kv_json = serde_json::to_string(&summary_kv)?;
     let factor_kv_json = serde_json::to_string(&factor_kv)?;
     let research_summary_kv_json = serde_json::to_string(&research_summary_kv)?;
+    let registry_rows_json = serde_json::to_string(&registry_rows)?;
+    let strategy_compare_json = serde_json::to_string(&strategy_compare_rows)?;
     let research_regime_json = serde_json::to_string(&research_regime_rows)?;
     let research_decay_json = serde_json::to_string(&research_decay_rows)?;
     let research_rolling_json = serde_json::to_string(&research_rolling_rows)?;
     let data_quality_json = serde_json::to_string(&data_quality_rows)?;
     let audit_markets_json = serde_json::to_string(&audit_markets)?;
     let audit_config_sha_json = serde_json::to_string(&audit_config_sha)?;
+    let registry_refresh_path_json = serde_json::to_string(&registry_refresh_path)?;
     let text = dashboard_text(language);
     let text_en = dashboard_text(Language::En);
     let text_zh = dashboard_text(Language::Zh);
@@ -518,6 +562,11 @@ th {{ color: var(--muted); font-weight: 600; }}
 .regime-title {{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }}
 .regime-main {{ font-size:22px; font-weight:800; margin-bottom:8px; }}
 .regime-sub {{ font-size:13px; color:var(--muted); line-height:1.45; }}
+.compare-bars {{ display:flex; align-items:flex-end; gap:10px; min-height:220px; padding:8px 0 4px; }}
+.compare-col {{ flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; gap:8px; }}
+.compare-wrap {{ width:100%; max-width:70px; height:170px; display:flex; align-items:flex-end; }}
+.compare-bar {{ width:100%; border-radius:12px 12px 6px 6px; background:linear-gradient(180deg, rgba(15,118,110,0.95), rgba(2,132,199,0.92)); }}
+.compare-note {{ font-size:12px; color:var(--muted); text-align:center; }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
@@ -757,6 +806,35 @@ th {{ color: var(--muted); font-weight: 600; }}
         </div>
       </div>
     </section>
+
+    <section class="panel" data-delay="5" style="margin-top: 16px;">
+      <div class="toolbar">
+        <h3 id="strategy-comparison-title" style="margin:0;">{strategy_comparison}</h3>
+        <span class="chip" id="strategy-comparison-stats"></span>
+      </div>
+      <div class="grid">
+        <div class="chart-shell">
+          <div class="subtle-title" id="top-runs-title">{top_runs}</div>
+          <div id="strategy-compare-chart" class="compare-bars"></div>
+        </div>
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th id="strategy-th-plugin">{plugin}</th>
+                <th id="strategy-th-method">{method}</th>
+                <th id="strategy-th-runs">{runs_label}</th>
+                <th id="strategy-th-avg-score">{avg_score}</th>
+                <th id="strategy-th-best-score">{best_score}</th>
+                <th id="strategy-th-avg-pnl">{avg_pnl_short}</th>
+                <th id="strategy-th-avg-sharpe">{avg_sharpe}</th>
+              </tr>
+            </thead>
+            <tbody id="strategy-compare-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </div>
 
 <script>
@@ -767,6 +845,8 @@ let trades = {trade_json};
 let rejections = {rejection_json};
 let summaryKv = {summary_kv_json};
 let factorKv = {factor_kv_json};
+let registryRows = {registry_rows_json};
+let strategyCompareRows = {strategy_compare_json};
 let researchSummaryKv = {research_summary_kv_json};
 let researchRegimeRows = {research_regime_json};
 let researchDecayRows = {research_decay_json};
@@ -774,6 +854,7 @@ let researchRollingRows = {research_rolling_json};
 let dataQualityRows = {data_quality_json};
 let auditMarkets = {audit_markets_json};
 let auditConfigSha = {audit_config_sha_json};
+const registryRefreshPath = {registry_refresh_path_json};
 const i18n = {i18n_json};
 const defaultLang = {default_lang_json};
 
@@ -1002,6 +1083,29 @@ function fmtSignedPct(n) {{
   return sign + (n * 100).toFixed(2) + '%';
 }}
 
+function parseRegistryRows(rows) {{
+  return (rows || []).map((r) => ({{
+    run_id: r.run_id || '',
+    timestamp_utc: r.timestamp_utc || '',
+    command: r.command || '',
+    output_dir: r.output_dir || '',
+    strategy_plugin: r.strategy_plugin || '',
+    portfolio_method: r.portfolio_method || '',
+    markets: r.markets || '',
+    primary_metric_name: r.primary_metric_name || '',
+    primary_metric_value: Number(r.primary_metric_value || 0),
+    composite_score: Number(r.composite_score || 0),
+    pnl_ratio: Number(r.pnl_ratio || 0),
+    max_drawdown: Number(r.max_drawdown || 0),
+    sharpe: Number(r.sharpe || 0),
+    sortino: Number(r.sortino || 0),
+    calmar: Number(r.calmar || 0),
+    trades: Number(r.trades || 0),
+    rejections: Number(r.rejections || 0),
+    notes: r.notes || '',
+  }}));
+}}
+
 function esc(text) {{
   return String(text == null ? '' : text)
     .replaceAll('&', '&amp;')
@@ -1037,6 +1141,84 @@ function lineChartSvg(series, width, height) {{
     <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
     ${{lines}}
   </svg>`;
+}}
+
+function buildStrategyCompare(rows) {{
+  const grouped = new Map();
+  (rows || [])
+    .filter((r) => r.strategy_plugin || r.portfolio_method)
+    .forEach((r) => {{
+      const plugin = r.strategy_plugin || '-';
+      const method = r.portfolio_method || '-';
+      const key = plugin + '|' + method;
+      if (!grouped.has(key)) {{
+        grouped.set(key, {{
+          strategy_plugin: plugin,
+          portfolio_method: method,
+          runs: 0,
+          score_sum: 0,
+          best_score: Number.NEGATIVE_INFINITY,
+          pnl_sum: 0,
+          sharpe_sum: 0,
+        }});
+      }}
+      const cur = grouped.get(key);
+      cur.runs += 1;
+      cur.score_sum += Number(r.composite_score || 0);
+      cur.best_score = Math.max(cur.best_score, Number(r.composite_score || 0));
+      cur.pnl_sum += Number(r.pnl_ratio || 0);
+      cur.sharpe_sum += Number(r.sharpe || 0);
+    }});
+  return [...grouped.values()]
+    .map((r) => ({{
+      strategy_plugin: r.strategy_plugin,
+      portfolio_method: r.portfolio_method,
+      runs: r.runs,
+      avg_score: r.runs > 0 ? r.score_sum / r.runs : 0,
+      best_score: Number.isFinite(r.best_score) ? r.best_score : 0,
+      avg_pnl_ratio: r.runs > 0 ? r.pnl_sum / r.runs : 0,
+      avg_sharpe: r.runs > 0 ? r.sharpe_sum / r.runs : 0,
+    }}))
+    .sort((a, b) => Number(b.best_score || 0) - Number(a.best_score || 0));
+}}
+
+function renderStrategyComparison(text) {{
+  strategyCompareRows = buildStrategyCompare(registryRows);
+  const chart = document.getElementById('strategy-compare-chart');
+  const body = document.getElementById('strategy-compare-rows');
+  const stats = document.getElementById('strategy-comparison-stats');
+  if (!strategyCompareRows || strategyCompareRows.length === 0) {{
+    chart.innerHTML = `<div class="sub">run_registry.csv</div>`;
+    body.innerHTML = `<tr><td colspan="7" class="sub">run_registry.csv not found</td></tr>`;
+    stats.textContent = '0';
+    return;
+  }}
+
+  const top = strategyCompareRows.slice(0, 6);
+  const maxScore = Math.max(...top.map((r) => Math.abs(Number(r.best_score || 0))), 0.0001);
+  chart.innerHTML = top.map((row) => {{
+    const height = Math.max(16, (Math.abs(Number(row.best_score || 0)) / maxScore) * 170);
+    return `<div class="compare-col">
+      <div class="compare-note">${{Number(row.best_score || 0).toFixed(3)}}</div>
+      <div class="compare-wrap"><div class="compare-bar" style="height:${{height}}px"></div></div>
+      <div class="compare-note">${{esc(row.strategy_plugin)}}</div>
+      <div class="compare-note">${{esc(row.portfolio_method)}}</div>
+    </div>`;
+  }}).join('');
+
+  body.innerHTML = strategyCompareRows.slice(0, 10).map((row) => `<tr>
+    <td>${{esc(row.strategy_plugin)}}</td>
+    <td>${{esc(row.portfolio_method)}}</td>
+    <td>${{row.runs}}</td>
+    <td>${{Number(row.avg_score || 0).toFixed(3)}}</td>
+    <td>${{Number(row.best_score || 0).toFixed(3)}}</td>
+    <td>${{fmtSignedPct(Number(row.avg_pnl_ratio || 0))}}</td>
+    <td>${{Number(row.avg_sharpe || 0).toFixed(3)}}</td>
+  </tr>`).join('');
+
+  const combos = strategyCompareRows.length;
+  const runs = (registryRows || []).filter((r) => r.strategy_plugin || r.portfolio_method).length;
+  stats.textContent = `${{runs}} runs | ${{combos}} combos`;
 }}
 
 function researchCardValue(key) {{
@@ -1348,6 +1530,15 @@ function applyLanguage(lang) {{
   document.getElementById('rej-th-reason').textContent = text.reason;
 
   document.getElementById('factors-title').textContent = text.factors;
+  document.getElementById('strategy-comparison-title').textContent = text.strategy_comparison;
+  document.getElementById('top-runs-title').textContent = text.top_runs;
+  document.getElementById('strategy-th-plugin').textContent = text.plugin;
+  document.getElementById('strategy-th-method').textContent = text.method;
+  document.getElementById('strategy-th-runs').textContent = text.runs_label;
+  document.getElementById('strategy-th-avg-score').textContent = text.avg_score;
+  document.getElementById('strategy-th-best-score').textContent = text.best_score;
+  document.getElementById('strategy-th-avg-pnl').textContent = text.avg_pnl_short;
+  document.getElementById('strategy-th-avg-sharpe').textContent = text.avg_sharpe;
   document.getElementById('research-title').textContent = text.research;
   document.getElementById('decay-chart-title').textContent = text.decay_overview;
   document.getElementById('decay-title').textContent = text.decay_overview;
@@ -1386,6 +1577,7 @@ function applyLanguage(lang) {{
   renderTrades(text);
   renderRejections();
   renderFactors(text);
+  renderStrategyComparison(text);
   renderResearch(text);
   renderDataQuality();
   renderAudit();
@@ -1470,7 +1662,7 @@ function renderAudit() {{
 
 async function refreshFromFiles() {{
   try {{
-    const [summaryResp, equityResp, tradesResp, rejResp, factorResp, auditResp, researchSummaryResp, researchSummaryResp2, researchJsonResp, researchJsonResp2, dqResp, dq2Resp, dqReportResp, auditJsonResp] =
+    const [summaryResp, equityResp, tradesResp, rejResp, factorResp, auditResp, researchSummaryResp, researchSummaryResp2, researchJsonResp, researchJsonResp2, dqResp, dq2Resp, dqReportResp, auditJsonResp, registryResp] =
       await Promise.all([
       fetch('./summary.txt', {{ cache: 'no-store' }}),
       fetch('./equity_curve.csv', {{ cache: 'no-store' }}),
@@ -1486,6 +1678,7 @@ async function refreshFromFiles() {{
       fetch('./data_quality/data_quality_summary.txt', {{ cache: 'no-store' }}).catch(() => null),
       fetch('./data_quality_report.csv', {{ cache: 'no-store' }}).catch(() => null),
       fetch('./audit_snapshot.json', {{ cache: 'no-store' }}).catch(() => null),
+      fetch(registryRefreshPath, {{ cache: 'no-store' }}).catch(() => null),
     ]);
 
     if (summaryResp.ok) {{
@@ -1603,6 +1796,10 @@ async function refreshFromFiles() {{
       const f = await factorResp.text();
       factorKv = parseKv(f);
     }}
+    if (registryResp && registryResp.ok) {{
+      const csv = await registryResp.text();
+      registryRows = parseRegistryRows(parseCsv(csv));
+    }}
 
     const t = getText(langSwitch.value);
     liveStatus.textContent = t.live_on;
@@ -1671,9 +1868,18 @@ refreshFromFiles();
         qty = text.qty,
         price = text.price,
         fees = text.fees,
+        runs_label = text.runs_label,
         rejections = text.rejections,
         reason = text.reason,
         factors = text.factors,
+        strategy_comparison = text.strategy_comparison,
+        plugin = text.plugin,
+        method = text.method,
+        avg_score = text.avg_score,
+        best_score = text.best_score,
+        avg_pnl_short = text.avg_pnl_short,
+        avg_sharpe = text.avg_sharpe,
+        top_runs = text.top_runs,
         research = text.research,
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
@@ -1695,6 +1901,8 @@ refreshFromFiles();
         rejection_json = rejection_json,
         summary_kv_json = summary_kv_json,
         factor_kv_json = factor_kv_json,
+        registry_rows_json = registry_rows_json,
+        strategy_compare_json = strategy_compare_json,
         research_summary_kv_json = research_summary_kv_json,
         research_regime_json = research_regime_json,
         research_decay_json = research_decay_json,
@@ -1702,6 +1910,7 @@ refreshFromFiles();
         data_quality_json = data_quality_json,
         audit_markets_json = audit_markets_json,
         audit_config_sha_json = audit_config_sha_json,
+        registry_refresh_path_json = registry_refresh_path_json,
         i18n_json = i18n_json,
         default_lang_json = default_lang_json,
     );
@@ -1945,6 +2154,63 @@ fn read_research_report(
     )
 }
 
+fn read_registry_rows(path: &Path) -> Result<Vec<RunRegistryEntry>> {
+    let mut rows = read_run_registry(path)?;
+    rows.retain(|r| !r.strategy_plugin.is_empty() || !r.portfolio_method.is_empty());
+    Ok(rows)
+}
+
+fn build_strategy_compare_rows(rows: &[RunRegistryEntry]) -> Vec<StrategyCompareRowUi> {
+    let mut grouped: std::collections::BTreeMap<(String, String), Vec<&RunRegistryEntry>> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let plugin = if row.strategy_plugin.is_empty() {
+            "-".to_string()
+        } else {
+            row.strategy_plugin.clone()
+        };
+        let method = if row.portfolio_method.is_empty() {
+            "-".to_string()
+        } else {
+            row.portfolio_method.clone()
+        };
+        grouped.entry((plugin, method)).or_default().push(row);
+    }
+
+    let mut out = grouped
+        .into_iter()
+        .map(|((strategy_plugin, portfolio_method), group)| {
+            let runs = group.len();
+            let avg_score =
+                group.iter().map(|r| r.composite_score).sum::<f64>() / runs.max(1) as f64;
+            let best_score = group
+                .iter()
+                .map(|r| r.composite_score)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let avg_pnl_ratio = group.iter().map(|r| r.pnl_ratio).sum::<f64>() / runs.max(1) as f64;
+            let avg_sharpe = group.iter().map(|r| r.sharpe).sum::<f64>() / runs.max(1) as f64;
+            StrategyCompareRowUi {
+                strategy_plugin,
+                portfolio_method,
+                runs,
+                avg_score,
+                best_score,
+                avg_pnl_ratio,
+                avg_sharpe,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    out.sort_by(|a, b| {
+        b.best_score
+            .total_cmp(&a.best_score)
+            .then_with(|| b.avg_score.total_cmp(&a.avg_score))
+            .then_with(|| a.strategy_plugin.cmp(&b.strategy_plugin))
+            .then_with(|| a.portfolio_method.cmp(&b.portfolio_method))
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2011,18 +2277,26 @@ mod tests {
 }"#,
         )
         .expect("write research json");
+        fs::write(
+            output_dir.join("run_registry.csv"),
+            "run_id,timestamp_utc,command,output_dir,strategy_plugin,portfolio_method,markets,primary_metric_name,primary_metric_value,composite_score,pnl_ratio,max_drawdown,sharpe,sortino,calmar,trades,rejections,notes\nrun-1,2026-01-02T00:00:00Z,run,outputs_rust,my_alpha,risk_parity,US|JP,end_equity,100.0,1.2345,0.1000,0.0500,1.2000,1.3000,1.4000,12,0,first\nrun-2,2026-01-03T00:00:00Z,run,outputs_rust,my_alpha,hrp,US|JP,end_equity,101.0,1.4567,0.1200,0.0400,1.5000,1.6000,1.7000,10,1,second\n",
+        )
+        .expect("write registry");
 
         let path =
             build_dashboard_with_language(&output_dir, Language::En).expect("build dashboard");
         let html = fs::read_to_string(path).expect("read dashboard");
         assert!(html.contains("Research"));
+        assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("researchDecayRows"));
+        assert!(html.contains("registryRows"));
         assert!(html.contains("momentum"));
         assert!(html.contains("researchRollingRows"));
         assert!(html.contains("research-decay-chart"));
         assert!(html.contains("research-rolling-chart"));
         assert!(html.contains("research-regime-cards"));
         assert!(html.contains("trend_up_low_vol"));
+        assert!(html.contains("my_alpha"));
     }
 
     fn make_temp_output_dir(prefix: &str) -> PathBuf {
