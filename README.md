@@ -62,6 +62,7 @@ Detailed mapping: `docs/GITHUB_LEARNINGS.md`
 - Market-aware transaction costs (commission/slippage/sell tax/min fee per market)
 - Streaming-style event replay export (`replay` command)
 - Walk-forward optimization with grid search
+- Research report generator with walk-forward / regime split / factor decay diagnostics
 - Cross-market research command with leaderboard export
 - Professional metrics: CAGR / Sharpe / Sortino / Calmar / Win Rate / Profit Factor
 - Reproducible benchmark suite with dataset manifest hashing
@@ -148,6 +149,37 @@ Generates:
 
 - `outputs_rust/optimize/walk_forward_folds.csv`
 - `outputs_rust/optimize/walk_forward_summary.txt`
+
+## Research Report
+
+```bash
+cargo run --bin research_report -- \
+  --config config/bot.toml \
+  --output-dir outputs_rust/research_report \
+  --train-days 12 \
+  --test-days 5 \
+  --short-windows 3,4,5 \
+  --long-windows 7,9,11 \
+  --vol-windows 5,7 \
+  --top-ns 1,2 \
+  --min-momentums=-0.01,0.0,0.01 \
+  --strategy-plugins layered_multi_factor,momentum_guard \
+  --portfolio-methods risk_parity,hrp \
+  --factor-decay-horizons 1,3,5,10 \
+  --regime-vol-window 10 \
+  --regime-fast-window 5 \
+  --regime-slow-window 20
+```
+
+Generates:
+
+- `outputs_rust/research_report/research_report.md`
+- `outputs_rust/research_report/research_report.html`
+- `outputs_rust/research_report/research_report.json`
+- `outputs_rust/research_report/factor_decay.csv`
+- `outputs_rust/research_report/regime_split.csv`
+- `outputs_rust/research_report/walk_forward_deep_dive.csv`
+- `outputs_rust/research_report/walk_forward/walk_forward_folds.csv`
 
 ## Cross-market research leaderboard
 

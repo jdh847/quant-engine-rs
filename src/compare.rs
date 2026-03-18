@@ -160,7 +160,10 @@ fn parse_audit_json(text: &str) -> Result<BTreeMap<String, String>> {
                 .and_then(|x| x.get("sha256"))
                 .and_then(|x| x.as_str())
             {
-                out.insert(format!("market.{name}.industry_sha256"), ind_sha.to_string());
+                out.insert(
+                    format!("market.{name}.industry_sha256"),
+                    ind_sha.to_string(),
+                );
             }
             if let Some(hol_sha) = market
                 .get("holiday_file")
@@ -230,8 +233,14 @@ fn build_rows(
     keys.sort();
     keys.into_iter()
         .map(|key| {
-            let base = baseline.get(&key).cloned().unwrap_or_else(|| "-".to_string());
-            let cand = candidate.get(&key).cloned().unwrap_or_else(|| "-".to_string());
+            let base = baseline
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
+            let cand = candidate
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
             let changed = base != cand;
             CompareField {
                 key,
@@ -250,8 +259,11 @@ fn write_compare_outputs(output_dir: &Path, report: &CompareReport) -> Result<()
     )
     .context("write compare json")?;
 
-    fs::write(output_dir.join("compare_report.md"), render_markdown(report))
-        .context("write compare markdown")?;
+    fs::write(
+        output_dir.join("compare_report.md"),
+        render_markdown(report),
+    )
+    .context("write compare markdown")?;
     fs::write(output_dir.join("compare_report.html"), render_html(report))
         .context("write compare html")?;
     Ok(())
@@ -448,4 +460,3 @@ mod tests {
         assert!(out.join("compare_report.json").exists());
     }
 }
-

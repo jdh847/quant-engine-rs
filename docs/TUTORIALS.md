@@ -68,7 +68,36 @@ Expected:
 - `outputs_rust/data_quality/data_quality_report.csv`
 - `outputs_rust/data_quality/data_quality_summary.txt`
 
-## 5) Generate a Reproducible Synthetic Dataset (No External Data)
+## 5) Research Report (Walk-Forward + Regime Split + Factor Decay)
+
+```bash
+cargo run --bin research_report -- \
+  --config config/bot.toml \
+  --output-dir outputs_rust/research_report \
+  --train-days 10 \
+  --test-days 4 \
+  --short-windows 3 \
+  --long-windows 7 \
+  --vol-windows 5 \
+  --top-ns 1 \
+  --min-momentums 0.001 \
+  --portfolio-methods risk_parity \
+  --factor-decay-horizons 1,3,5 \
+  --regime-vol-window 5 \
+  --regime-fast-window 3 \
+  --regime-slow-window 7
+```
+
+Expected:
+
+- `outputs_rust/research_report/research_report.md`
+- `outputs_rust/research_report/research_report.html`
+- `outputs_rust/research_report/research_report.json`
+- `outputs_rust/research_report/factor_decay.csv`
+- `outputs_rust/research_report/regime_split.csv`
+- `outputs_rust/research_report/walk_forward_deep_dive.csv`
+
+## 6) Generate a Reproducible Synthetic Dataset (No External Data)
 
 ```bash
 cargo run -- gen-synth-data --output-dir data_synth --seed 42 --us-symbols 12 --a-symbols 12 --jp-symbols 12 --force
@@ -76,7 +105,7 @@ cargo run -- gen-synth-data --output-dir data_synth --seed 42 --us-symbols 12 --
 
 Then update `config/bot.toml` `markets.*.data_file` paths to point at `data_synth/*.csv`.
 
-## 6) Create a Shareable Run Bundle
+## 7) Create a Shareable Run Bundle
 
 ```bash
 cargo run -- bundle --output-dir outputs_rust

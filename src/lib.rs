@@ -24,6 +24,7 @@ pub mod portfolio;
 pub mod registry;
 pub mod replay;
 pub mod research;
+pub mod research_report;
 pub mod risk;
 pub mod robustness;
 pub mod safety;
@@ -33,3 +34,5 @@ pub mod serve;
 pub mod strategy;
 pub mod synth_data;
 pub mod ui;
+
+pub use optimize::WalkForwardRequest;
