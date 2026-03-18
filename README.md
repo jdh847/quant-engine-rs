@@ -66,7 +66,7 @@ Detailed mapping: `docs/GITHUB_LEARNINGS.md`
 - Cross-market research command with leaderboard export
 - Professional metrics: CAGR / Sharpe / Sortino / Calmar / Win Rate / Profit Factor
 - Reproducible benchmark suite with dataset manifest hashing
-- Intuitive dashboard UI (`dashboard.html`) generated from run outputs
+- Intuitive dashboard UI (`dashboard.html`) plus share-ready snapshot page (`dashboard_share.html`)
 - Robustness assessment (walk-forward OOS stability + PBO proxy + deflated Sharpe proxy)
 - Data quality validator (duplicates, invalid rows, return outliers, date-order/gap checks)
 - Paper daemon loop (cycle scheduler + state snapshots + drawdown alerts)
@@ -111,6 +111,7 @@ Generates:
 - `outputs_rust/rejections.csv`
 - `outputs_rust/summary.txt`
 - `outputs_rust/dashboard.html`
+- `outputs_rust/dashboard_share.html`
 - `outputs_rust/config_used_redacted.toml` (best-effort redaction; avoid putting secrets in configs)
 - `outputs_rust/factor_attribution.csv`
 - `outputs_rust/factor_attribution_summary.txt`

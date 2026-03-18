@@ -13,6 +13,7 @@ Expected:
 
 - a new folder under `outputs_rust/demo/run_<timestamp>/`
 - `dashboard.html` with KPI cards + trades/rejections/factors panels
+- `dashboard_share.html` for share/screenshot/export use
 - by default, `validate-data` is run and dashboard shows Data Quality (use `--skip-validate-data` to disable)
 - `config_used_redacted.toml` (best-effort redaction; avoid putting secrets in configs)
 

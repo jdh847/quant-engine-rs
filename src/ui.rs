@@ -2120,8 +2120,18 @@ refreshFromFiles();
         default_lang_json = default_lang_json,
     );
 
+    let share_html = render_share_dashboard(
+        language,
+        &summary_kv,
+        &research_summary_kv,
+        &strategy_compare_rows,
+        &leaderboard_rows,
+        &data_quality_rows,
+    );
+
     let mut dashboard_path = output_dir.join("dashboard.html");
     fs::write(&dashboard_path, html)?;
+    fs::write(output_dir.join("dashboard_share.html"), share_html)?;
     dashboard_path = fs::canonicalize(dashboard_path)?;
 
     Ok(dashboard_path)
@@ -2140,6 +2150,230 @@ fn escape_html(input: &str) -> String {
         }
     }
     out
+}
+
+fn render_share_dashboard(
+    language: Language,
+    summary_kv: &serde_json::Value,
+    research_summary_kv: &serde_json::Value,
+    strategy_compare_rows: &[StrategyCompareRowUi],
+    leaderboard_rows: &[LeaderboardRowUi],
+    data_quality_rows: &[DataQualityRowUi],
+) -> String {
+    let text = dashboard_text(language);
+    let end_equity = kv_string(summary_kv, "end_equity");
+    let pnl_ratio = kv_string(summary_kv, "pnl_ratio");
+    let sharpe = kv_string(summary_kv, "sharpe");
+    let max_drawdown = kv_string(summary_kv, "max_drawdown");
+    let best_decay_factor = kv_string(research_summary_kv, "best_decay_factor");
+    let best_decay_horizon = kv_string(research_summary_kv, "best_decay_horizon_days");
+    let best_decay_ic = kv_string(research_summary_kv, "best_decay_ic");
+    let latest_rolling_factor = kv_string(research_summary_kv, "latest_rolling_factor");
+    let latest_rolling_horizon = kv_string(research_summary_kv, "latest_rolling_horizon_days");
+    let latest_rolling_ic = kv_string(research_summary_kv, "latest_rolling_ic");
+    let top_combo = strategy_compare_rows.first();
+    let top_leaderboard = leaderboard_rows.first();
+    let pass = data_quality_rows
+        .iter()
+        .filter(|r| r.status == "PASS")
+        .count();
+    let warn = data_quality_rows
+        .iter()
+        .filter(|r| r.status == "WARN")
+        .count();
+    let fail = data_quality_rows
+        .iter()
+        .filter(|r| r.status == "FAIL")
+        .count();
+    let markets = data_quality_rows
+        .iter()
+        .map(|r| r.market.clone())
+        .collect::<Vec<_>>()
+        .join(" / ");
+
+    let top_combo_html = if let Some(row) = top_combo {
+        format!(
+            "<div class=\"sub\">{plugin}: <strong>{}</strong></div>\
+             <div class=\"sub\">{method}: <strong>{}</strong></div>\
+             <div class=\"sub\">{best_score}: <strong>{:.3}</strong></div>\
+             <div class=\"sub\">{avg_score}: <strong>{:.3}</strong></div>",
+            escape_html(&row.strategy_plugin),
+            escape_html(&row.portfolio_method),
+            row.best_score,
+            row.avg_score,
+            plugin = text.plugin,
+            method = text.method,
+            best_score = text.best_score,
+            avg_score = text.avg_score
+        )
+    } else {
+        "<div class=\"sub\">run_registry.csv not found</div>".to_string()
+    };
+
+    let leaderboard_html = if leaderboard_rows.is_empty() {
+        "<div class=\"sub\">leaderboard_public.csv not found</div>".to_string()
+    } else {
+        let rows = leaderboard_rows
+            .iter()
+            .take(5)
+            .map(|row| {
+                format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td></tr>",
+                    row.rank,
+                    escape_html(&row.source),
+                    escape_html(&row.strategy_plugin),
+                    row.score
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!(
+            "<table><thead><tr><th>{rank}</th><th>{source}</th><th>{plugin}</th><th>{score}</th></tr></thead><tbody>{rows}</tbody></table>",
+            rank = text.rank,
+            source = text.source,
+            plugin = text.plugin,
+            score = text.score,
+            rows = rows
+        )
+    };
+
+    let headline = if let Some(row) = top_leaderboard {
+        format!(
+            "{} #{}, {}={:.3}, {}={}",
+            text.public_leaderboard,
+            row.rank,
+            text.score,
+            row.score,
+            text.source,
+            escape_html(&row.source)
+        )
+    } else {
+        text.subtitle.to_string()
+    };
+
+    format!(
+        r#"<!doctype html>
+<html lang="{lang}">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{title} Share</title>
+<style>
+body {{ margin:0; font-family:"Avenir Next","Helvetica Neue",sans-serif; color:#102033; background:
+  radial-gradient(900px 500px at 10% 10%, rgba(245,158,11,.18), transparent 60%),
+  radial-gradient(900px 600px at 85% 15%, rgba(2,132,199,.16), transparent 58%),
+  linear-gradient(180deg, #fffaf0 0%, #f0fdf4 100%); }}
+.wrap {{ max-width: 1180px; margin: 0 auto; padding: 28px 18px 36px; }}
+.hero {{ display:grid; grid-template-columns: 1.25fr .95fr; gap:16px; }}
+.panel {{ background: rgba(255,255,255,.86); border:1px solid rgba(15,23,42,.10); border-radius: 24px; padding: 18px; box-shadow: 0 18px 40px rgba(15,23,42,.08); }}
+.eyebrow {{ display:inline-flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }}
+.chip {{ border:1px solid rgba(15,23,42,.10); border-radius:999px; padding:6px 10px; font-size:12px; background:rgba(255,255,255,.7); }}
+.title {{ font-size: 34px; font-weight: 900; line-height: 1.05; margin-bottom: 10px; }}
+.sub {{ color: rgba(16,32,51,.68); font-size: 14px; line-height: 1.5; }}
+.metrics {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:12px; margin-top:16px; }}
+.metric {{ background: rgba(255,255,255,.72); border:1px solid rgba(15,23,42,.10); border-radius:18px; padding:14px; }}
+.k {{ color: rgba(16,32,51,.58); font-size:12px; }}
+.v {{ font-size: 24px; font-weight: 900; margin-top: 6px; }}
+.grid {{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:16px; margin-top:16px; }}
+.section-title {{ font-size: 16px; font-weight: 800; margin-bottom: 10px; }}
+table {{ width:100%; border-collapse: collapse; font-size: 13px; }}
+th, td {{ text-align:left; padding:8px; border-bottom:1px solid rgba(15,23,42,.08); }}
+th {{ color: rgba(16,32,51,.58); }}
+@media (max-width: 960px) {{
+  .hero, .grid, .metrics {{ grid-template-columns: 1fr; }}
+}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <section class="panel">
+        <div class="eyebrow">
+          <span class="chip">{subtitle}</span>
+          <span class="chip">{markets}</span>
+          <span class="chip">paper-only</span>
+        </div>
+        <div class="title">{title}</div>
+        <div class="sub">{headline}</div>
+        <div class="metrics">
+          <div class="metric"><div class="k">{kpi_end_equity}</div><div class="v">{end_equity}</div></div>
+          <div class="metric"><div class="k">{kpi_pnl_ratio}</div><div class="v">{pnl_ratio}</div></div>
+          <div class="metric"><div class="k">{kpi_sharpe}</div><div class="v">{sharpe}</div></div>
+          <div class="metric"><div class="k">{kpi_max_drawdown}</div><div class="v">{max_drawdown}</div></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="section-title">{research}</div>
+        <div class="sub">{best_decay}: <strong>{best_decay_factor}</strong> / {best_decay_horizon}d / IC={best_decay_ic}</div>
+        <div class="sub" style="margin-top:8px;">{latest_rolling}: <strong>{latest_rolling_factor}</strong> / {latest_rolling_horizon}d / IC={latest_rolling_ic}</div>
+        <div class="sub" style="margin-top:14px;">{data_quality}: PASS={pass} | WARN={warn} | FAIL={fail}</div>
+      </section>
+    </div>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="section-title">{strategy_comparison}</div>
+        {top_combo_html}
+      </section>
+      <section class="panel">
+        <div class="section-title">{public_leaderboard}</div>
+        {leaderboard_html}
+      </section>
+      <section class="panel">
+        <div class="section-title">{overview}</div>
+        <div class="sub">{generated_from}</div>
+        <div class="sub" style="margin-top:8px;">dashboard.html</div>
+        <div class="sub">dashboard_share.html</div>
+      </section>
+    </div>
+  </div>
+</body>
+</html>"#,
+        lang = language.html_lang(),
+        title = escape_html(text.title),
+        subtitle = escape_html(text.subtitle),
+        headline = headline,
+        markets = if markets.is_empty() {
+            "US / A-share / JP".to_string()
+        } else {
+            escape_html(&markets)
+        },
+        generated_from = escape_html(text.generated_from),
+        overview = escape_html(text.overview),
+        research = escape_html(text.research),
+        strategy_comparison = escape_html(text.strategy_comparison),
+        public_leaderboard = escape_html(text.public_leaderboard),
+        data_quality = escape_html(text.data_quality),
+        best_decay = escape_html(text.best_decay),
+        latest_rolling = escape_html(text.latest_rolling),
+        kpi_end_equity = escape_html(text.kpi_end_equity),
+        kpi_pnl_ratio = escape_html(text.kpi_pnl_ratio),
+        kpi_sharpe = escape_html(text.kpi_sharpe),
+        kpi_max_drawdown = escape_html(text.kpi_max_drawdown),
+        end_equity = escape_html(&end_equity),
+        pnl_ratio = escape_html(&pnl_ratio),
+        sharpe = escape_html(&sharpe),
+        max_drawdown = escape_html(&max_drawdown),
+        best_decay_factor = escape_html(&best_decay_factor),
+        best_decay_horizon = escape_html(&best_decay_horizon),
+        best_decay_ic = escape_html(&best_decay_ic),
+        latest_rolling_factor = escape_html(&latest_rolling_factor),
+        latest_rolling_horizon = escape_html(&latest_rolling_horizon),
+        latest_rolling_ic = escape_html(&latest_rolling_ic),
+        pass = pass,
+        warn = warn,
+        fail = fail,
+        top_combo_html = top_combo_html,
+        leaderboard_html = leaderboard_html
+    )
+}
+
+fn kv_string(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("-")
+        .to_string()
 }
 
 fn read_equity_rows(path: &Path) -> Result<Vec<EquityRow>> {
@@ -2509,6 +2743,8 @@ mod tests {
         let path =
             build_dashboard_with_language(&output_dir, Language::En).expect("build dashboard");
         let html = fs::read_to_string(path).expect("read dashboard");
+        let share_html =
+            fs::read_to_string(output_dir.join("dashboard_share.html")).expect("read share");
         assert!(html.contains("Research"));
         assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("Public Leaderboard"));
@@ -2522,6 +2758,9 @@ mod tests {
         assert!(html.contains("research-regime-cards"));
         assert!(html.contains("trend_up_low_vol"));
         assert!(html.contains("my_alpha"));
+        assert!(share_html.contains("dashboard_share.html"));
+        assert!(share_html.contains("Public Leaderboard"));
+        assert!(share_html.contains("paper-only"));
     }
 
     fn make_temp_output_dir(prefix: &str) -> PathBuf {

@@ -62,6 +62,7 @@ pub fn create_run_bundle(req: &BundleRequest) -> Result<BundleReport> {
     // but they are recorded in the manifest.
     let wanted = [
         "dashboard.html",
+        "dashboard_share.html",
         "summary.txt",
         "config_used_redacted.toml",
         "audit_snapshot.json",
