@@ -243,6 +243,10 @@ struct DashboardI18nText {
     avg_sharpe: String,
     top_runs: String,
     composite_score: String,
+    run_details: String,
+    selected_combo: String,
+    time_label: String,
+    notes_label: String,
     research: String,
     decay_overview: String,
     rolling_ic: String,
@@ -334,6 +338,10 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         avg_sharpe: t.avg_sharpe.to_string(),
         top_runs: t.top_runs.to_string(),
         composite_score: t.composite_score.to_string(),
+        run_details: t.run_details.to_string(),
+        selected_combo: t.selected_combo.to_string(),
+        time_label: t.time_label.to_string(),
+        notes_label: t.notes_label.to_string(),
         research: t.research.to_string(),
         decay_overview: t.decay_overview.to_string(),
         rolling_ic: t.rolling_ic.to_string(),
@@ -611,7 +619,10 @@ th {{ color: var(--muted); font-weight: 600; }}
 .compare-col {{ flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; gap:8px; }}
 .compare-wrap {{ width:100%; max-width:70px; height:170px; display:flex; align-items:flex-end; }}
 .compare-bar {{ width:100%; border-radius:12px 12px 6px 6px; background:linear-gradient(180deg, rgba(15,118,110,0.95), rgba(2,132,199,0.92)); }}
+.compare-bar.active {{ outline: 3px solid rgba(245,158,11,0.85); outline-offset: 4px; }}
 .compare-note {{ font-size:12px; color:var(--muted); text-align:center; }}
+.clickable {{ cursor:pointer; }}
+.selected-row {{ background: rgba(245,158,11,0.10); }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
@@ -888,6 +899,27 @@ th {{ color: var(--muted); font-weight: 600; }}
           </table>
         </div>
       </div>
+      <div style="margin-top:12px;">
+        <div class="toolbar">
+          <div class="subtle-title" id="strategy-details-title" style="margin:0;">{run_details}</div>
+          <span class="chip" id="strategy-selected-combo"></span>
+        </div>
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th id="strategy-detail-time">{time_label}</th>
+                <th id="strategy-detail-command">{command_label}</th>
+                <th id="strategy-detail-score">{composite_score}</th>
+                <th id="strategy-detail-pnl">{avg_pnl_short}</th>
+                <th id="strategy-detail-sharpe">{avg_sharpe}</th>
+                <th id="strategy-detail-notes">{notes_label}</th>
+              </tr>
+            </thead>
+            <tbody id="strategy-detail-rows"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <section class="panel" data-delay="5" style="margin-top: 16px;">
@@ -950,6 +982,7 @@ const registryRefreshPath = {registry_refresh_path_json};
 const leaderboardRefreshPath = {leaderboard_refresh_path_json};
 const i18n = {i18n_json};
 const defaultLang = {default_lang_json};
+let strategySelectionKey = '';
 
 const c = document.getElementById('chart');
 const ctx = c.getContext('2d');
@@ -1275,6 +1308,10 @@ function buildStrategyCompare(rows) {{
     .sort((a, b) => Number(b.best_score || 0) - Number(a.best_score || 0));
 }}
 
+function comboKey(plugin, method) {{
+  return (plugin || '-') + '|' + (method || '-');
+}}
+
 function parseLeaderboardRows(rows) {{
   return (rows || []).map((r) => ({{
     rank: Number(r.rank || 0),
@@ -1315,26 +1352,41 @@ function renderStrategyComparison(text) {{
   const chart = document.getElementById('strategy-compare-chart');
   const body = document.getElementById('strategy-compare-rows');
   const stats = document.getElementById('strategy-comparison-stats');
+  const detailBody = document.getElementById('strategy-detail-rows');
+  const selectedChip = document.getElementById('strategy-selected-combo');
   if (!strategyCompareRows || strategyCompareRows.length === 0) {{
     chart.innerHTML = `<div class="sub">run_registry.csv</div>`;
     body.innerHTML = `<tr><td colspan="7" class="sub">run_registry.csv not found</td></tr>`;
+    detailBody.innerHTML = `<tr><td colspan="6" class="sub">run_registry.csv not found</td></tr>`;
+    selectedChip.textContent = '';
     stats.textContent = '0';
     return;
+  }}
+
+  const validKeys = new Set(strategyCompareRows.map((row) => comboKey(row.strategy_plugin, row.portfolio_method)));
+  if (!strategySelectionKey || !validKeys.has(strategySelectionKey)) {{
+    const first = strategyCompareRows[0];
+    strategySelectionKey = comboKey(first.strategy_plugin, first.portfolio_method);
   }}
 
   const top = strategyCompareRows.slice(0, 6);
   const maxScore = Math.max(...top.map((r) => Math.abs(Number(r.best_score || 0))), 0.0001);
   chart.innerHTML = top.map((row) => {{
+    const key = comboKey(row.strategy_plugin, row.portfolio_method);
     const height = Math.max(16, (Math.abs(Number(row.best_score || 0)) / maxScore) * 170);
+    const active = key === strategySelectionKey ? ' active' : '';
     return `<div class="compare-col">
       <div class="compare-note">${{Number(row.best_score || 0).toFixed(3)}}</div>
-      <div class="compare-wrap"><div class="compare-bar" style="height:${{height}}px"></div></div>
+      <div class="compare-wrap"><div class="compare-bar clickable${{active}}" data-combo-key="${{esc(key)}}" style="height:${{height}}px"></div></div>
       <div class="compare-note">${{esc(row.strategy_plugin)}}</div>
       <div class="compare-note">${{esc(row.portfolio_method)}}</div>
     </div>`;
   }}).join('');
 
-  body.innerHTML = strategyCompareRows.slice(0, 10).map((row) => `<tr>
+  body.innerHTML = strategyCompareRows.slice(0, 10).map((row) => {{
+    const key = comboKey(row.strategy_plugin, row.portfolio_method);
+    const selectedCls = key === strategySelectionKey ? 'selected-row' : '';
+    return `<tr class="clickable ${{selectedCls}}" data-combo-key="${{esc(key)}}">
     <td>${{esc(row.strategy_plugin)}}</td>
     <td>${{esc(row.portfolio_method)}}</td>
     <td>${{row.runs}}</td>
@@ -1342,11 +1394,40 @@ function renderStrategyComparison(text) {{
     <td>${{Number(row.best_score || 0).toFixed(3)}}</td>
     <td>${{fmtSignedPct(Number(row.avg_pnl_ratio || 0))}}</td>
     <td>${{Number(row.avg_sharpe || 0).toFixed(3)}}</td>
-  </tr>`).join('');
+  </tr>`;
+  }}).join('');
 
   const combos = strategyCompareRows.length;
   const runs = filteredRegistryRows.filter((r) => r.strategy_plugin || r.portfolio_method).length;
   stats.textContent = `${{runs}} runs | ${{combos}} combos | range=${{selectedRange}}`;
+
+  chart.querySelectorAll('[data-combo-key]').forEach((el) => {{
+    el.addEventListener('click', () => {{
+      strategySelectionKey = el.getAttribute('data-combo-key') || '';
+      renderStrategyComparison(text);
+    }});
+  }});
+  body.querySelectorAll('[data-combo-key]').forEach((el) => {{
+    el.addEventListener('click', () => {{
+      strategySelectionKey = el.getAttribute('data-combo-key') || '';
+      renderStrategyComparison(text);
+    }});
+  }});
+
+  const detailRows = filteredRegistryRows
+    .filter((r) => comboKey(r.strategy_plugin || '-', r.portfolio_method || '-') === strategySelectionKey)
+    .sort((a, b) => String(b.timestamp_utc || '').localeCompare(String(a.timestamp_utc || '')));
+  selectedChip.textContent = `${{text.selected_combo}}: ${{strategySelectionKey.replace('|', ' / ')}}`;
+  detailBody.innerHTML = detailRows.length === 0
+    ? `<tr><td colspan="6" class="sub">No runs for selected combo</td></tr>`
+    : detailRows.slice(0, 12).map((r) => `<tr>
+      <td>${{esc(r.timestamp_utc || '-')}}</td>
+      <td>${{esc(r.command || '-')}}</td>
+      <td>${{Number(r.composite_score || 0).toFixed(3)}}</td>
+      <td>${{fmtSignedPct(Number(r.pnl_ratio || 0))}}</td>
+      <td>${{Number(r.sharpe || 0).toFixed(3)}}</td>
+      <td>${{esc(r.notes || '-')}}</td>
+    </tr>`).join('');
 }}
 
 function renderPublicLeaderboard(text) {{
@@ -1699,6 +1780,13 @@ function applyLanguage(lang) {{
   document.getElementById('strategy-th-best-score').textContent = text.best_score;
   document.getElementById('strategy-th-avg-pnl').textContent = text.avg_pnl_short;
   document.getElementById('strategy-th-avg-sharpe').textContent = text.avg_sharpe;
+  document.getElementById('strategy-details-title').textContent = text.run_details;
+  document.getElementById('strategy-detail-time').textContent = text.time_label;
+  document.getElementById('strategy-detail-command').textContent = text.command_label;
+  document.getElementById('strategy-detail-score').textContent = text.composite_score;
+  document.getElementById('strategy-detail-pnl').textContent = text.avg_pnl_short;
+  document.getElementById('strategy-detail-sharpe').textContent = text.avg_sharpe;
+  document.getElementById('strategy-detail-notes').textContent = text.notes_label;
   document.getElementById('public-leaderboard-title').textContent = text.public_leaderboard;
   document.getElementById('leaderboard-source-label').textContent = text.source;
   document.getElementById('leaderboard-time-label').textContent = text.time_range;
@@ -2085,6 +2173,10 @@ refreshFromFiles();
         avg_pnl_short = text.avg_pnl_short,
         avg_sharpe = text.avg_sharpe,
         top_runs = text.top_runs,
+        composite_score = text.composite_score,
+        run_details = text.run_details,
+        time_label = text.time_label,
+        notes_label = text.notes_label,
         research = text.research,
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
@@ -2748,6 +2840,7 @@ mod tests {
         assert!(html.contains("Research"));
         assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("Public Leaderboard"));
+        assert!(html.contains("strategy-detail-rows"));
         assert!(html.contains("researchDecayRows"));
         assert!(html.contains("registryRows"));
         assert!(html.contains("leaderboardRows"));
