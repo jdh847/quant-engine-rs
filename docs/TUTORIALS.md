@@ -133,5 +133,6 @@ Runnable helpers:
 
 - `scripts/tutorial_demo.sh`
 - `scripts/tutorial_research.sh`
+- `scripts/tutorial_research_report.sh`
 - `scripts/tutorial_optimize.sh`
 - `scripts/tutorial_serve.sh`

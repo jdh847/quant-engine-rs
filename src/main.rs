@@ -30,6 +30,7 @@ use private_quant_bot::{
     },
     replay::run_event_replay,
     research::{run_cross_market_research, ResearchRequest},
+    research_report::{write_research_report, ResearchReportRequest},
     robustness::{run_robustness_assessment, RobustnessRequest},
     scaffold::create_strategy_plugin_scaffold,
     sdk::{
@@ -115,6 +116,38 @@ enum Command {
         strategy_plugins: String,
         #[arg(long, default_value = "risk_parity,hrp")]
         portfolio_methods: String,
+    },
+    ResearchReport {
+        #[arg(long, default_value = "config/bot.toml")]
+        config: String,
+        #[arg(long, default_value = "outputs_rust/research_report")]
+        output_dir: String,
+        #[arg(long, default_value_t = 12)]
+        train_days: usize,
+        #[arg(long, default_value_t = 5)]
+        test_days: usize,
+        #[arg(long, default_value = "3,4,5")]
+        short_windows: String,
+        #[arg(long, default_value = "7,9,11")]
+        long_windows: String,
+        #[arg(long, default_value = "5,7")]
+        vol_windows: String,
+        #[arg(long, default_value = "1,2")]
+        top_ns: String,
+        #[arg(long, default_value = "0.001,0.002,0.003", allow_hyphen_values = true)]
+        min_momentums: String,
+        #[arg(long, default_value = "")]
+        strategy_plugins: String,
+        #[arg(long, default_value = "risk_parity,hrp")]
+        portfolio_methods: String,
+        #[arg(long, default_value = "1,3,5,10")]
+        factor_decay_horizons: String,
+        #[arg(long, default_value_t = 10)]
+        regime_vol_window: usize,
+        #[arg(long, default_value_t = 5)]
+        regime_fast_window: usize,
+        #[arg(long, default_value_t = 20)]
+        regime_slow_window: usize,
     },
     Research {
         #[arg(long, default_value = "config/bot.toml")]
@@ -389,6 +422,40 @@ fn main() -> Result<()> {
             &strategy_plugins,
             &portfolio_methods,
             language,
+            cli.strategy_plugin.as_deref(),
+        ),
+        Command::ResearchReport {
+            config,
+            output_dir,
+            train_days,
+            test_days,
+            short_windows,
+            long_windows,
+            vol_windows,
+            top_ns,
+            min_momentums,
+            strategy_plugins,
+            portfolio_methods,
+            factor_decay_horizons,
+            regime_vol_window,
+            regime_fast_window,
+            regime_slow_window,
+        } => research_report_command(
+            &config,
+            &output_dir,
+            train_days,
+            test_days,
+            &short_windows,
+            &long_windows,
+            &vol_windows,
+            &top_ns,
+            &min_momentums,
+            &strategy_plugins,
+            &portfolio_methods,
+            &factor_decay_horizons,
+            regime_vol_window,
+            regime_fast_window,
+            regime_slow_window,
             cli.strategy_plugin.as_deref(),
         ),
         Command::Benchmark {
@@ -1213,6 +1280,81 @@ fn research_command(
             registry.total_runs
         );
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn research_report_command(
+    config_path: &str,
+    output_dir: &str,
+    train_days: usize,
+    test_days: usize,
+    short_windows: &str,
+    long_windows: &str,
+    vol_windows: &str,
+    top_ns: &str,
+    min_momentums: &str,
+    strategy_plugins: &str,
+    portfolio_methods: &str,
+    factor_decay_horizons: &str,
+    regime_vol_window: usize,
+    regime_fast_window: usize,
+    regime_slow_window: usize,
+    strategy_plugin_override: Option<&str>,
+) -> Result<()> {
+    let mut cfg = load_config(config_path)?;
+    apply_strategy_plugin_override(&mut cfg, strategy_plugin_override)?;
+    let data = load_data_for_config(&cfg)?;
+
+    let req = ResearchReportRequest {
+        walk_forward: WalkForwardRequest {
+            train_days,
+            test_days,
+            strategy_plugins: resolve_strategy_plugins(strategy_plugins, &cfg)?,
+            short_windows: parse_usize_list(short_windows)?,
+            long_windows: parse_usize_list(long_windows)?,
+            vol_windows: parse_usize_list(vol_windows)?,
+            top_ns: parse_usize_list(top_ns)?,
+            min_momentums: parse_f64_list(min_momentums)?,
+            portfolio_methods: parse_portfolio_methods(portfolio_methods)?,
+        },
+        factor_decay_horizons: parse_usize_list(factor_decay_horizons)?,
+        regime_vol_window,
+        regime_fast_window,
+        regime_slow_window,
+    };
+
+    let (report, artifacts) = write_research_report(&cfg, &data, &req, output_dir)?;
+    println!(
+        "research report completed | folds={} regime_rows={} factor_decay_rows={}",
+        report.walk_forward_rows.len(),
+        report.regime_rows.len(),
+        report.factor_decay_rows.len()
+    );
+    println!(
+        "research_report: {} | {} | {}",
+        artifacts.markdown_path.display(),
+        artifacts.html_path.display(),
+        artifacts.json_path.display()
+    );
+    let registry = append_registry_operation(
+        &cfg,
+        "research-report",
+        output_dir,
+        "avg_test_sharpe",
+        report.walk_forward_summary.avg_test_sharpe,
+        &format!(
+            "folds={} regime_rows={} factor_decay_rows={}",
+            report.walk_forward_rows.len(),
+            report.regime_rows.len(),
+            report.factor_decay_rows.len()
+        ),
+    )?;
+    println!(
+        "run_registry: {} (runs={})",
+        registry.csv_path.display(),
+        registry.total_runs
+    );
     Ok(())
 }
 
