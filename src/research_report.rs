@@ -887,27 +887,57 @@ fn render_markdown(report: &ResearchReport) -> String {
 }
 
 fn render_html(report: &ResearchReport) -> String {
-    format!(
-        r#"<!doctype html>
+    let report_json = json_for_html(report);
+    let template = r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research Report</title>
   <style>
-    :root {{ color-scheme: light; --bg:#f6f1e8; --card:#fffdf8; --ink:#1c1a17; --muted:#6f685e; --line:#d9cfc1; --accent:#1f6f78; --accent2:#d9822b; }}
+    :root {{ color-scheme: light; --bg:#f6f1e8; --card:#fffdf8; --ink:#1c1a17; --muted:#6f685e; --line:#d9cfc1; --accent:#1f6f78; --accent2:#d9822b; --accent3:#a63d40; }}
     body {{ margin:0; font-family: Georgia, "Iowan Old Style", serif; background: radial-gradient(circle at top left, #fff7e8, var(--bg)); color:var(--ink); }}
-    main {{ max-width: 1180px; margin: 0 auto; padding: 32px 20px 48px; }}
+    main {{ max-width: 1240px; margin: 0 auto; padding: 32px 20px 48px; }}
     h1,h2 {{ margin: 0 0 12px; }}
     .sub {{ color:var(--muted); margin-bottom:24px; }}
     .grid {{ display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom:24px; }}
     .card {{ background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(28,26,23,.05); }}
     .k {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
     .v {{ font-size:28px; font-weight:700; margin-top:6px; }}
+    .grid-2 {{ display:grid; grid-template-columns: 1.1fr .9fr; gap:16px; }}
+    .grid-3 {{ display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }}
+    .toolbar {{ display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:0 0 16px; }}
+    .pill {{ display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:999px; background:#f2eadc; border:1px solid var(--line); color:var(--muted); font-size:13px; }}
+    select {{ border:1px solid var(--line); border-radius:10px; background:#fff; padding:8px 10px; color:var(--ink); }}
     table {{ width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:16px; overflow:hidden; }}
     th,td {{ padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; font-size:14px; }}
     th {{ background:#f2eadc; }}
     section {{ margin-top:28px; }}
+    .chart-card {{ min-height: 280px; }}
+    .bars {{ display:flex; align-items:flex-end; gap:10px; min-height:220px; padding:16px 0 8px; }}
+    .bar-col {{ flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; gap:8px; }}
+    .bar-wrap {{ width:100%; max-width:58px; height:180px; display:flex; align-items:flex-end; }}
+    .bar {{ width:100%; border-radius:12px 12px 6px 6px; background:linear-gradient(180deg, var(--accent), #18474d); position:relative; }}
+    .bar.neg {{ background:linear-gradient(180deg, var(--accent3), #6a2325); }}
+    .bar-note {{ font-size:12px; color:var(--muted); text-align:center; }}
+    .bar-label {{ font-size:12px; color:var(--ink); }}
+    .heatmap {{ display:grid; gap:10px; }}
+    .heat-row {{ display:grid; gap:10px; grid-template-columns: 150px repeat(8, minmax(70px, 1fr)); align-items:center; }}
+    .heat-head {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+    .heat-factor {{ font-size:13px; font-weight:700; }}
+    .heat-cell {{ border-radius:12px; padding:12px 8px; text-align:center; border:1px solid rgba(28,26,23,.06); }}
+    .heat-value {{ font-size:16px; font-weight:700; }}
+    .heat-meta {{ font-size:11px; color:rgba(28,26,23,.68); margin-top:4px; }}
+    .regime-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; }}
+    .regime-card {{ padding:14px; border-radius:16px; background:#fcfaf5; border:1px solid var(--line); }}
+    .regime-title {{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }}
+    .regime-main {{ font-size:24px; font-weight:700; margin-bottom:8px; }}
+    .regime-sub {{ font-size:13px; color:var(--muted); line-height:1.45; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    @media (max-width: 920px) {{
+      .grid-2, .grid-3 {{ grid-template-columns: 1fr; }}
+      .heat-row {{ grid-template-columns: 120px repeat(8, minmax(58px, 1fr)); }}
+    }}
   </style>
 </head>
 <body>
@@ -915,93 +945,241 @@ fn render_html(report: &ResearchReport) -> String {
     <h1>Research Report</h1>
     <div class="sub">Walk-forward, regime split, and factor decay diagnostics</div>
     <div class="grid">
-      <div class="card"><div class="k">Walk-Forward Folds</div><div class="v">{folds}</div></div>
-      <div class="card"><div class="k">Avg Test PnL</div><div class="v">{avg_pnl:.2}%</div></div>
-      <div class="card"><div class="k">Avg Test Sharpe</div><div class="v">{avg_sharpe:.2}</div></div>
-      <div class="card"><div class="k">Strategy Turnover</div><div class="v">{turnover:.1}%</div></div>
+      <div class="card"><div class="k">Walk-Forward Folds</div><div class="v">__FOLDS__</div></div>
+      <div class="card"><div class="k">Avg Test PnL</div><div class="v">__AVG_PNL__%</div></div>
+      <div class="card"><div class="k">Avg Test Sharpe</div><div class="v">__AVG_SHARPE__</div></div>
+      <div class="card"><div class="k">Strategy Turnover</div><div class="v">__TURNOVER__%</div></div>
     </div>
-    <section>
-      <h2>Walk-Forward</h2>
-      {walk_table}
+    <section class="grid-2">
+      <div class="card chart-card">
+        <h2>Walk-Forward Edge</h2>
+        <div class="sub">Each fold shows out-of-sample PnL, with color encoding for positive vs negative.</div>
+        <div id="walk-bars" class="bars"></div>
+      </div>
+      <div class="card chart-card">
+        <h2>Research Posture</h2>
+        <div class="sub">Compact view of selection stability and train-vs-test gap.</div>
+        <div id="walk-posture" class="grid-3"></div>
+      </div>
     </section>
     <section>
-      <h2>Regime Split</h2>
-      {regime_table}
+      <div class="toolbar">
+        <h2 style="margin-right:auto;">Factor Decay</h2>
+        <label class="pill">Scope
+          <select id="decay-scope"></select>
+        </label>
+      </div>
+      <div class="card chart-card">
+        <div class="sub">Heatmap of factor IC by horizon. Warm cells are stronger, cool cells are weaker.</div>
+        <div id="decay-heatmap" class="heatmap"></div>
+      </div>
+      <div class="card" style="margin-top:16px;">
+        <div class="sub">Full decay table</div>
+        <div id="decay-table"></div>
+      </div>
     </section>
     <section>
-      <h2>Factor Decay</h2>
-      {decay_table}
+      <div class="toolbar">
+        <h2 style="margin-right:auto;">Regime Split</h2>
+        <label class="pill">Market
+          <select id="regime-market"></select>
+        </label>
+      </div>
+      <div class="grid-2">
+        <div class="card chart-card">
+          <div class="sub">Composite alpha by volatility/trend bucket.</div>
+          <div id="regime-cards" class="regime-grid"></div>
+        </div>
+        <div class="card">
+          <div class="sub">Detailed rows</div>
+          <div id="regime-table"></div>
+        </div>
+      </div>
+    </section>
+    <section>
+      <h2>Walk-Forward Table</h2>
+      <div id="walk-table"></div>
     </section>
   </main>
+  <script id="report-data" type="application/json">__REPORT_JSON__</script>
+  <script>
+    const report = JSON.parse(document.getElementById('report-data').textContent);
+
+    function fmtPct(v) {{
+      return `${{(v * 100).toFixed(2)}}%`;
+    }}
+
+    function fmtNum(v) {{
+      return Number(v).toFixed(3);
+    }}
+
+    function esc(text) {{
+      return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }}
+
+    function renderWalkBars() {{
+      const root = document.getElementById('walk-bars');
+      const rows = report.walk_forward_rows;
+      const maxAbs = Math.max(...rows.map(r => Math.abs(r.test_pnl_ratio)), 0.0001);
+      root.innerHTML = rows.map(row => {{
+        const pct = Math.abs(row.test_pnl_ratio) / maxAbs;
+        const height = Math.max(18, pct * 180);
+        const neg = row.test_pnl_ratio < 0 ? 'neg' : '';
+        return `<div class="bar-col">
+          <div class="bar-note mono">PnL ${{fmtPct(row.test_pnl_ratio)}}</div>
+          <div class="bar-wrap"><div class="bar ${{neg}}" style="height:${{height}}px"></div></div>
+          <div class="bar-label">Fold ${{row.fold}}</div>
+          <div class="bar-note">${{esc(row.strategy_plugin)}} / ${{esc(row.portfolio_method)}}</div>
+        </div>`;
+      }}).join('');
+    }}
+
+    function renderWalkPosture() {{
+      const root = document.getElementById('walk-posture');
+      const s = report.walk_forward_summary;
+      const cards = [
+        ['Avg Test Sharpe', fmtNum(s.avg_test_sharpe)],
+        ['Avg Train/Test Gap', fmtNum(s.avg_train_test_gap)],
+        ['Strategy Turnover', `${{(s.strategy_turnover_ratio * 100).toFixed(1)}}%`],
+      ];
+      root.innerHTML = cards.map(([k, v]) => `<div class="card"><div class="k">${{esc(k)}}</div><div class="v">${{esc(v)}}</div></div>`).join('');
+    }}
+
+    function buildHeatColor(value) {{
+      const clamped = Math.max(-0.25, Math.min(0.25, value));
+      if (clamped >= 0) {{
+        const alpha = 0.18 + (clamped / 0.25) * 0.6;
+        return `rgba(31, 111, 120, ${{alpha.toFixed(3)}})`;
+      }}
+      const alpha = 0.18 + (Math.abs(clamped) / 0.25) * 0.6;
+      return `rgba(166, 61, 64, ${{alpha.toFixed(3)}})`;
+    }}
+
+    function renderDecay(scope) {{
+      const rows = report.factor_decay_rows.filter(r => r.scope === scope);
+      const horizons = [...new Set(rows.map(r => r.horizon_days))].sort((a, b) => a - b);
+      const factors = ['momentum', 'mean_reversion', 'low_vol', 'volume', 'composite'];
+      const root = document.getElementById('decay-heatmap');
+      root.innerHTML = '';
+      root.insertAdjacentHTML('beforeend', `<div class="heat-row heat-head"><div>Factor</div>${{horizons.map(h => `<div>${{h}}d</div>`).join('')}}</div>`);
+      factors.forEach(factor => {{
+        const cells = horizons.map(h => rows.find(r => r.factor === factor && r.horizon_days === h));
+        root.insertAdjacentHTML('beforeend', `<div class="heat-row">
+          <div class="heat-factor">${{esc(factor)}}</div>
+          ${{
+            cells.map(cell => {{
+              if (!cell) return '<div class="heat-cell">-</div>';
+              return `<div class="heat-cell" style="background:${{buildHeatColor(cell.ic)}};">
+                <div class="heat-value">${{fmtNum(cell.ic)}}</div>
+                <div class="heat-meta">${{fmtPct(cell.long_short_spread)}}</div>
+              </div>`;
+            }}).join('')
+          }}
+        </div>`);
+      }});
+
+      const table = document.getElementById('decay-table');
+      table.innerHTML = `<table><thead><tr><th>Factor</th><th>Horizon</th><th>Obs</th><th>IC</th><th>Top Q Avg Ret</th><th>Bottom Q Avg Ret</th><th>Long/Short</th></tr></thead><tbody>${
+        rows.map(row => `<tr>
+          <td>${{esc(row.factor)}}</td>
+          <td>${{row.horizon_days}}d</td>
+          <td>${{row.observations}}</td>
+          <td>${{fmtNum(row.ic)}}</td>
+          <td>${{fmtPct(row.top_quintile_avg_return)}}</td>
+          <td>${{fmtPct(row.bottom_quintile_avg_return)}}</td>
+          <td>${{fmtPct(row.long_short_spread)}}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
+    }}
+
+    function renderRegime(market) {{
+      const rows = report.regime_rows.filter(r => r.market === market);
+      const cards = document.getElementById('regime-cards');
+      cards.innerHTML = rows.map(row => `<div class="regime-card">
+        <div class="regime-title">${{esc(row.regime_bucket)}}</div>
+        <div class="regime-main">${{fmtNum(row.avg_composite_alpha)}}</div>
+        <div class="regime-sub">obs=${{row.observations}} | momentum=${{fmtNum(row.avg_factor_momentum)}} | low-vol=${{fmtNum(row.avg_factor_low_vol)}}</div>
+      </div>`).join('');
+
+      const table = document.getElementById('regime-table');
+      table.innerHTML = `<table><thead><tr><th>Regime</th><th>Obs</th><th>Composite</th><th>Momentum</th><th>Mean Rev</th><th>Low Vol</th><th>Volume</th><th>Selected</th></tr></thead><tbody>${
+        rows.map(row => `<tr>
+          <td>${{esc(row.regime_bucket)}}</td>
+          <td>${{row.observations}}</td>
+          <td>${{fmtNum(row.avg_composite_alpha)}}</td>
+          <td>${{fmtNum(row.avg_factor_momentum)}}</td>
+          <td>${{fmtNum(row.avg_factor_mean_reversion)}}</td>
+          <td>${{fmtNum(row.avg_factor_low_vol)}}</td>
+          <td>${{fmtNum(row.avg_factor_volume)}}</td>
+          <td>${{fmtNum(row.avg_selected_symbols)}}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
+    }}
+
+    function renderWalkTable() {{
+      const root = document.getElementById('walk-table');
+      root.innerHTML = `<table><thead><tr><th>Fold</th><th>Strategy</th><th>Portfolio</th><th>Train Score</th><th>Test PnL</th><th>Sharpe</th><th>Calmar</th><th>Drawdown</th><th>Gap</th></tr></thead><tbody>${
+        report.walk_forward_rows.map(row => `<tr>
+          <td>${{row.fold}}</td>
+          <td>${{esc(row.strategy_plugin)}}</td>
+          <td>${{esc(row.portfolio_method)}}</td>
+          <td>${{fmtNum(row.train_score)}}</td>
+          <td>${{fmtPct(row.test_pnl_ratio)}}</td>
+          <td>${{fmtNum(row.test_sharpe)}}</td>
+          <td>${{fmtNum(row.test_calmar)}}</td>
+          <td>${{fmtPct(row.test_drawdown)}}</td>
+          <td>${{fmtNum(row.train_test_gap)}}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
+    }}
+
+    function init() {{
+      renderWalkBars();
+      renderWalkPosture();
+      renderWalkTable();
+
+      const scopeSel = document.getElementById('decay-scope');
+      const scopes = [...new Set(report.factor_decay_rows.map(r => r.scope))];
+      scopeSel.innerHTML = scopes.map(scope => `<option value="${{esc(scope)}}">${{esc(scope)}}</option>`).join('');
+      scopeSel.addEventListener('change', () => renderDecay(scopeSel.value));
+      renderDecay(scopes[0] || 'ALL');
+
+      const marketSel = document.getElementById('regime-market');
+      const markets = [...new Set(report.regime_rows.map(r => r.market))];
+      marketSel.innerHTML = markets.map(m => `<option value="${{esc(m)}}">${{esc(m)}}</option>`).join('');
+      marketSel.addEventListener('change', () => renderRegime(marketSel.value));
+      renderRegime(markets[0] || 'ALL');
+    }}
+
+    init();
+  </script>
 </body>
-</html>"#,
-        folds = report.walk_forward_summary.folds,
-        avg_pnl = report.walk_forward_summary.avg_test_pnl_ratio * 100.0,
-        avg_sharpe = report.walk_forward_summary.avg_test_sharpe,
-        turnover = report.walk_forward_summary.strategy_turnover_ratio * 100.0,
-        walk_table = html_walk_table(&report.walk_forward_rows),
-        regime_table = html_regime_table(&report.regime_rows),
-        decay_table = html_decay_table(&report.factor_decay_rows),
-    )
-}
-
-fn html_walk_table(rows: &[WalkForwardDeepDiveRow]) -> String {
-    let mut out = String::from(
-        "<table><thead><tr><th>Fold</th><th>Strategy</th><th>Portfolio</th><th>Train Score</th><th>Test PnL %</th><th>Test Sharpe</th><th>Gap</th></tr></thead><tbody>",
-    );
-    for row in rows {
-        out.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.4}</td><td>{:.4}%</td><td>{:.4}</td><td>{:.4}</td></tr>",
-            row.fold,
-            escape_html(&row.strategy_plugin),
-            escape_html(&row.portfolio_method),
-            row.train_score,
-            row.test_pnl_ratio * 100.0,
-            row.test_sharpe,
-            row.train_test_gap
-        ));
-    }
-    out.push_str("</tbody></table>");
-    out
-}
-
-fn html_regime_table(rows: &[RegimeSplitRow]) -> String {
-    let mut out = String::from(
-        "<table><thead><tr><th>Market</th><th>Regime</th><th>Obs</th><th>Avg Composite</th><th>Avg Momentum</th><th>Avg Low Vol</th></tr></thead><tbody>",
-    );
-    for row in rows {
-        out.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.4}</td><td>{:.4}</td><td>{:.4}</td></tr>",
-            escape_html(&row.market),
-            escape_html(&row.regime_bucket),
-            row.observations,
-            row.avg_composite_alpha,
-            row.avg_factor_momentum,
-            row.avg_factor_low_vol
-        ));
-    }
-    out.push_str("</tbody></table>");
-    out
-}
-
-fn html_decay_table(rows: &[FactorDecayRow]) -> String {
-    let mut out = String::from(
-        "<table><thead><tr><th>Scope</th><th>Factor</th><th>Horizon</th><th>Obs</th><th>IC</th><th>Top Quintile Avg Ret</th><th>Long/Short</th></tr></thead><tbody>",
-    );
-    for row in rows {
-        out.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.4}</td><td>{:.4}%</td><td>{:.4}%</td></tr>",
-            escape_html(&row.scope),
-            escape_html(&row.factor),
-            row.horizon_days,
-            row.observations,
-            row.ic,
-            row.top_quintile_avg_return * 100.0,
-            row.long_short_spread * 100.0
-        ));
-    }
-    out.push_str("</tbody></table>");
-    out
+</html>"#;
+    template
+        .replace("__FOLDS__", &report.walk_forward_summary.folds.to_string())
+        .replace(
+            "__AVG_PNL__",
+            &format!(
+                "{:.2}",
+                report.walk_forward_summary.avg_test_pnl_ratio * 100.0
+            ),
+        )
+        .replace(
+            "__AVG_SHARPE__",
+            &format!("{:.2}", report.walk_forward_summary.avg_test_sharpe),
+        )
+        .replace(
+            "__TURNOVER__",
+            &format!(
+                "{:.1}",
+                report.walk_forward_summary.strategy_turnover_ratio * 100.0
+            ),
+        )
+        .replace("__REPORT_JSON__", &report_json)
 }
 
 fn mean(values: &[f64]) -> f64 {
@@ -1116,11 +1294,10 @@ fn score_test_stats(stats: &BacktestStats) -> f64 {
     stats.pnl_ratio + stats.sharpe * 0.10 + stats.calmar * 0.05 - stats.max_drawdown * 0.8
 }
 
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+fn json_for_html<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "{}".to_string())
+        .replace("</", "<\\/")
 }
 
 #[cfg(test)]

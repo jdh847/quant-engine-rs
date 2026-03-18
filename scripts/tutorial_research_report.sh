@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-cargo run --bin research_report -- \
+cargo run --bin private_quant_bot -- research-report \
   --config config/bot.toml \
   --output-dir outputs_rust/research_report \
   --train-days 10 \
