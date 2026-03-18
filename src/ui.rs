@@ -193,6 +193,7 @@ struct DashboardI18nText {
     ic_short: String,
     spread: String,
     scope: String,
+    metric: String,
     avg_selected_symbols: String,
     start: String,
     end: String,
@@ -259,6 +260,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         ic_short: t.ic_short.to_string(),
         spread: t.spread.to_string(),
         scope: t.scope.to_string(),
+        metric: t.metric.to_string(),
         avg_selected_symbols: t.avg_selected_symbols.to_string(),
         start: t.start.to_string(),
         end: t.end.to_string(),
@@ -483,6 +485,9 @@ th {{ color: var(--muted); font-weight: 600; }}
 .table-card table {{ font-size: 12px; }}
 .table-card th, .table-card td {{ padding: 7px 8px; }}
 .subtle-title {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }}
+.mini-toolbar {{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }}
+.chart-shell {{ border: 1px solid rgba(15,23,42,0.08); border-radius: 14px; background: rgba(255,255,255,0.7); padding: 10px; min-height: 240px; }}
+.chart-shell svg {{ width: 100%; height: 220px; display:block; }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
@@ -634,13 +639,28 @@ th {{ color: var(--muted); font-weight: 600; }}
       <div class="grid" style="margin-top: 12px;">
         <div class="stack">
           <div>
+            <div class="mini-toolbar">
+              <span class="subtle-title" id="decay-chart-title" style="margin:0;">{decay_overview}</span>
+              <label class="pill"><span id="research-scope-label">{scope}</span>
+                <select id="research-decay-scope" class="select"></select>
+              </label>
+              <label class="pill"><span id="research-metric-label">{metric}</span>
+                <select id="research-decay-metric" class="select">
+                  <option value="ic">{ic_short}</option>
+                  <option value="long_short_spread">{spread}</option>
+                </select>
+              </label>
+            </div>
+            <div class="chart-shell" id="research-decay-chart"></div>
+          </div>
+          <div>
             <div class="subtle-title" id="decay-title">{decay_overview}</div>
             <div class="table-card">
               <table>
                 <thead>
                   <tr>
                     <th id="research-decay-factor">{factors}</th>
-                    <th id="research-decay-scope">{scope}</th>
+                    <th id="research-decay-scope-th">{scope}</th>
                     <th id="research-decay-horizon">{horizon_days}</th>
                     <th id="research-decay-ic">{ic_short}</th>
                     <th id="research-decay-spread">{spread}</th>
@@ -652,6 +672,15 @@ th {{ color: var(--muted); font-weight: 600; }}
           </div>
         </div>
         <div class="stack">
+          <div>
+            <div class="mini-toolbar">
+              <span class="subtle-title" id="rolling-chart-title" style="margin:0;">{rolling_ic}</span>
+              <label class="pill"><span id="research-rolling-horizon-label">{horizon_days}</span>
+                <select id="research-rolling-horizon-select" class="select"></select>
+              </label>
+            </div>
+            <div class="chart-shell" id="research-rolling-chart"></div>
+          </div>
           <div>
             <div class="subtle-title" id="rolling-title">{rolling_ic}</div>
             <div class="table-card">
@@ -915,11 +944,108 @@ function fmtSignedPct(n) {{
   return sign + (n * 100).toFixed(2) + '%';
 }}
 
+function esc(text) {{
+  return String(text == null ? '' : text)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}}
+
+function lineChartSvg(series, width, height) {{
+  const padding = 24;
+  const allValues = series.flatMap((s) => s.values.map((v) => Number(v.y || 0)));
+  if (allValues.length === 0) {{
+    return '';
+  }}
+  const min = Math.min(...allValues, 0);
+  const max = Math.max(...allValues, 0);
+  const span = Math.max(max - min, 1e-6);
+  const colors = ['#0f766e', '#f59e0b', '#b91c1c', '#2563eb', '#7c3aed'];
+  const zeroY = height - padding - ((0 - min) / span) * (height - padding * 2);
+  const lines = series.map((s, idx) => {{
+    const pts = s.values.map((v, i) => {{
+      const x = padding + (i * (width - padding * 2)) / Math.max(s.values.length - 1, 1);
+      const y = height - padding - ((Number(v.y || 0) - min) / span) * (height - padding * 2);
+      return `${{x.toFixed(1)}},${{y.toFixed(1)}}`;
+    }}).join(' ');
+    const color = colors[idx % colors.length];
+    return `<polyline fill="none" stroke="${{color}}" stroke-width="3" points="${{pts}}" />
+      <text x="${{width - padding}}" y="${{padding + idx * 16}}" fill="${{color}}" font-size="12" text-anchor="end">${{esc(s.name)}}</text>`;
+  }}).join('');
+  return `<svg viewBox="0 0 ${{width}} ${{height}}" aria-label="line chart">
+    <line x1="${{padding}}" y1="${{zeroY}}" x2="${{width - padding}}" y2="${{zeroY}}" stroke="rgba(15,23,42,0.16)" stroke-dasharray="4 4" />
+    <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
+    <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
+    ${{lines}}
+  </svg>`;
+}}
+
 function researchCardValue(key) {{
   return (researchSummaryKv || {{}})[key] || '';
 }}
 
+function syncResearchControls(text) {{
+  const scopeSel = document.getElementById('research-decay-scope');
+  const prevScope = scopeSel.value || 'ALL';
+  const scopes = [...new Set((researchDecayRows || []).map((r) => r.scope || 'ALL'))];
+  const orderedScopes = scopes.includes('ALL')
+    ? ['ALL', ...scopes.filter((s) => s !== 'ALL').sort()]
+    : scopes.sort();
+  scopeSel.innerHTML = orderedScopes.map((scope) => `<option value="${{esc(scope)}}">${{esc(scope)}}</option>`).join('');
+  scopeSel.value = orderedScopes.includes(prevScope) ? prevScope : (orderedScopes[0] || 'ALL');
+
+  const horizonSel = document.getElementById('research-rolling-horizon-select');
+  const prevHorizon = horizonSel.value || '';
+  const horizons = [...new Set((researchRollingRows || []).map((r) => Number(r.horizon_days || 0)).filter(Boolean))].sort((a, b) => a - b);
+  horizonSel.innerHTML = horizons.map((h) => `<option value="${{h}}">${{h}}d</option>`).join('');
+  if (horizons.length > 0) {{
+    horizonSel.value = horizons.map(String).includes(prevHorizon) ? prevHorizon : String(horizons[horizons.length - 1]);
+  }}
+
+  document.getElementById('research-scope-label').textContent = text.scope;
+  document.getElementById('research-metric-label').textContent = text.metric;
+  document.getElementById('research-rolling-horizon-label').textContent = text.horizon_days;
+}}
+
+function renderResearchCharts(text) {{
+  const scope = document.getElementById('research-decay-scope').value || 'ALL';
+  const metric = document.getElementById('research-decay-metric').value || 'ic';
+  const decayRoot = document.getElementById('research-decay-chart');
+  const factors = ['momentum', 'mean_reversion', 'low_vol', 'volume', 'composite'];
+  const decaySeries = factors.map((factor) => {{
+    const values = (researchDecayRows || [])
+      .filter((r) => (r.scope || 'ALL') === scope && r.factor === factor)
+      .sort((a, b) => Number(a.horizon_days || 0) - Number(b.horizon_days || 0))
+      .map((r) => ({{
+        x: Number(r.horizon_days || 0),
+        y: metric === 'ic' ? Number(r.ic || 0) : Number(r.long_short_spread || 0),
+      }}));
+    return {{ name: factor, values }};
+  }}).filter((s) => s.values.length > 0);
+  decayRoot.innerHTML = decaySeries.length
+    ? lineChartSvg(decaySeries, 560, 220) + `<div class="sub" style="margin-top:8px;">${{esc(text.scope)}}=${{esc(scope)}} | ${{esc(text.metric)}}=${{esc(metric === 'ic' ? text.ic_short : text.spread)}}</div>`
+    : `<div class="sub">research_report.json</div>`;
+
+  const horizon = Number(document.getElementById('research-rolling-horizon-select').value || 0);
+  const rollingRoot = document.getElementById('research-rolling-chart');
+  const rollingSeries = factors.map((factor) => {{
+    const values = (researchRollingRows || [])
+      .filter((r) => r.factor === factor && Number(r.horizon_days || 0) === horizon)
+      .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+      .map((r, idx) => ({{
+        x: idx,
+        y: Number(r.ic || 0),
+      }}));
+    return {{ name: factor, values }};
+  }}).filter((s) => s.values.length > 0);
+  rollingRoot.innerHTML = rollingSeries.length
+    ? lineChartSvg(rollingSeries, 560, 220) + `<div class="sub" style="margin-top:8px;">${{esc(text.horizon_days)}}=${{horizon || '-'}}d</div>`
+    : `<div class="sub">rolling_ic.csv / research_report.json</div>`;
+}}
+
 function renderResearch(text) {{
+  syncResearchControls(text);
   const kpis = document.getElementById('research-kpis');
   const decayBody = document.getElementById('research-decay-rows');
   const rollingBody = document.getElementById('research-rolling-rows');
@@ -971,6 +1097,7 @@ function renderResearch(text) {{
     (`rolling=${{(researchRollingRows || []).length}}`),
   ].filter(Boolean);
   document.getElementById('research-stats').textContent = stats.join(' | ');
+  renderResearchCharts(text);
 }}
 
 function renderKpis(text) {{
@@ -1129,10 +1256,12 @@ function applyLanguage(lang) {{
 
   document.getElementById('factors-title').textContent = text.factors;
   document.getElementById('research-title').textContent = text.research;
+  document.getElementById('decay-chart-title').textContent = text.decay_overview;
   document.getElementById('decay-title').textContent = text.decay_overview;
+  document.getElementById('rolling-chart-title').textContent = text.rolling_ic;
   document.getElementById('rolling-title').textContent = text.rolling_ic;
   document.getElementById('research-decay-factor').textContent = text.factors;
-  document.getElementById('research-decay-scope').textContent = text.scope;
+  document.getElementById('research-decay-scope-th').textContent = text.scope;
   document.getElementById('research-decay-horizon').textContent = text.horizon_days;
   document.getElementById('research-decay-ic').textContent = text.ic_short;
   document.getElementById('research-decay-spread').textContent = text.spread;
@@ -1140,6 +1269,10 @@ function applyLanguage(lang) {{
   document.getElementById('research-rolling-factor').textContent = text.factors;
   document.getElementById('research-rolling-horizon').textContent = text.horizon_days;
   document.getElementById('research-rolling-ic').textContent = text.ic_short;
+  const metricIcOpt = document.querySelector('#research-decay-metric option[value="ic"]');
+  const metricSpreadOpt = document.querySelector('#research-decay-metric option[value="long_short_spread"]');
+  if (metricIcOpt) metricIcOpt.textContent = text.ic_short;
+  if (metricSpreadOpt) metricSpreadOpt.textContent = text.spread;
   document.getElementById('dq-th-status').textContent = text.status;
   document.getElementById('dq-th-rows').textContent = text.rows;
   document.getElementById('dq-th-issues').textContent = text.issues;
@@ -1394,6 +1527,9 @@ seriesSelect.addEventListener('change', () => {{
   points = extractSeries(seriesSelect.value);
   applyLanguage(langSwitch.value);
 }});
+document.getElementById('research-decay-scope').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
+document.getElementById('research-decay-metric').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
+document.getElementById('research-rolling-horizon-select').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
 symbolInput.addEventListener('input', () => applyLanguage(langSwitch.value));
 marketSel.addEventListener('change', () => applyLanguage(langSwitch.value));
 sideSel.addEventListener('change', () => applyLanguage(langSwitch.value));
@@ -1444,6 +1580,7 @@ refreshFromFiles();
         ic_short = text.ic_short,
         spread = text.spread,
         scope = text.scope,
+        metric = text.metric,
         summary_html = summary_html,
         research_summary_html = research_summary_html,
         audit_html = audit_html,
@@ -1763,6 +1900,8 @@ mod tests {
         assert!(html.contains("researchDecayRows"));
         assert!(html.contains("momentum"));
         assert!(html.contains("researchRollingRows"));
+        assert!(html.contains("research-decay-chart"));
+        assert!(html.contains("research-rolling-chart"));
     }
 
     fn make_temp_output_dir(prefix: &str) -> PathBuf {
