@@ -11,7 +11,7 @@ use compare::{compare_runs, CompareRequest};
 #[derive(Parser, Debug)]
 #[command(
     name = "compare",
-    about = "Compare two paper-only quant run directories and generate audit/data-quality diff reports"
+    about = "Compare two paper-only quant run directories and generate metrics/audit/data-quality/research diff reports"
 )]
 struct Cli {
     #[arg(long)]
@@ -31,16 +31,19 @@ fn main() -> Result<()> {
     })?;
 
     println!(
-        "compare complete: metrics={} audit={} data_quality={}",
+        "compare complete: metrics={} audit={} data_quality={} research={}",
         report.metric_rows.len(),
         report.audit_rows.len(),
-        report.data_quality_rows.len()
+        report.data_quality_rows.len(),
+        report.research_rows.len()
     );
     println!(
-        "artifacts: {}/compare_report.md, {}/compare_report.html, {}/compare_report.json",
+        "artifacts: {}/compare_report.md, {}/compare_report.html, {}/compare_report.json, {}/compare_report.csv, {}/research_compare.csv",
         cli.output_dir.display(),
         cli.output_dir.display(),
-        cli.output_dir.display()
+        cli.output_dir.display(),
+        cli.output_dir.display(),
+        cli.output_dir.display(),
     );
     Ok(())
 }

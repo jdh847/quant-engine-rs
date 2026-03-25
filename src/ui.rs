@@ -220,6 +220,8 @@ struct CompareReportCompat {
     audit_rows: Vec<CompareFieldCompat>,
     #[serde(default)]
     data_quality_rows: Vec<CompareFieldCompat>,
+    #[serde(default)]
+    research_rows: Vec<CompareFieldCompat>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -253,6 +255,7 @@ struct RecentCompareUi {
     metric_changes: usize,
     audit_changes: usize,
     data_quality_changes: usize,
+    research_changes: usize,
     winner: String,
     winner_score: i32,
     winner_wins: usize,
@@ -415,6 +418,7 @@ struct DashboardI18nText {
     metric_changes_label: String,
     audit_changes_label: String,
     data_quality_changes_label: String,
+    research_changes_label: String,
     compare_not_found: String,
     winner_summary: String,
     candidate_wins: String,
@@ -573,6 +577,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         metric_changes_label: t.metric_changes_label.to_string(),
         audit_changes_label: t.audit_changes_label.to_string(),
         data_quality_changes_label: t.data_quality_changes_label.to_string(),
+        research_changes_label: t.research_changes_label.to_string(),
         compare_not_found: t.compare_not_found.to_string(),
         winner_summary: t.winner_summary.to_string(),
         candidate_wins: t.candidate_wins.to_string(),
@@ -2177,7 +2182,8 @@ function renderRecentCompare(text) {{
       <div class="sub" style="margin-top:8px;">
         ${{esc(text.metric_changes_label)}}=${{Number(recentCompare.metric_changes || 0)}} |
         ${{esc(text.audit_changes_label)}}=${{Number(recentCompare.audit_changes || 0)}} |
-        ${{esc(text.data_quality_changes_label)}}=${{Number(recentCompare.data_quality_changes || 0)}}
+        ${{esc(text.data_quality_changes_label)}}=${{Number(recentCompare.data_quality_changes || 0)}} |
+        ${{esc(text.research_changes_label)}}=${{Number(recentCompare.research_changes || 0)}}
       </div>
       <div class="compare-links">
         <a class="action-btn link" href="${{esc(recentCompare.output_href || '#')}}">${{esc(text.open_output_dir)}}</a>
@@ -2495,7 +2501,10 @@ function renderPaperOpsCenter(text) {{
   const auditReady = Boolean(auditConfigSha) && (auditMarkets || []).length > 0;
   const compareWinner = recentCompare ? String(recentCompare.winner || 'tie') : 'missing';
   const compareChanges = recentCompare
-    ? Number(recentCompare.metric_changes || 0) + Number(recentCompare.audit_changes || 0) + Number(recentCompare.data_quality_changes || 0)
+    ? Number(recentCompare.metric_changes || 0)
+      + Number(recentCompare.audit_changes || 0)
+      + Number(recentCompare.data_quality_changes || 0)
+      + Number(recentCompare.research_changes || 0)
     : 0;
   const avgTestSharpe = parseNum(researchCardValue('avg_test_sharpe'));
   const unstableFolds = Number(researchCardValue('unstable_folds') || 0);
@@ -4674,6 +4683,7 @@ fn discover_recent_compare(output_dir: &Path) -> Option<RecentCompareUi> {
             .iter()
             .filter(|r| r.changed)
             .count(),
+        research_changes: report.research_rows.iter().filter(|r| r.changed).count(),
         winner: report.winner_summary.winner,
         winner_score: report.winner_summary.score,
         winner_wins: report.winner_summary.wins.len(),
@@ -5125,7 +5135,8 @@ mod tests {
   "winner_summary":{"winner":"candidate","score":2,"wins":["pnl_ratio: 0.1 -> 0.2"],"losses":["max_drawdown: 0.1 -> 0.2"],"neutral":["trades: flat"]},
   "metric_rows":[{"changed":true},{"changed":false}],
   "audit_rows":[{"changed":true}],
-  "data_quality_rows":[{"changed":false},{"changed":true}]
+  "data_quality_rows":[{"changed":false},{"changed":true}],
+  "research_rows":[{"changed":true},{"changed":true},{"changed":false}]
 }"#,
         )
         .expect("write compare json");
@@ -5187,6 +5198,7 @@ mod tests {
         assert!(html.contains("compare_demo/compare_report.html"));
         assert!(html.contains("compare_demo"));
         assert!(html.contains("Metric Changes"));
+        assert!(html.contains("Research Changes"));
         assert!(html.contains("Winner Summary"));
         assert!(html.contains("Candidate Wins"));
         assert!(html.contains("momentum"));

@@ -28,6 +28,7 @@ pub struct CompareReport {
     pub metric_rows: Vec<CompareField>,
     pub audit_rows: Vec<CompareField>,
     pub data_quality_rows: Vec<CompareField>,
+    pub research_rows: Vec<CompareField>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +50,7 @@ pub fn compare_runs(req: &CompareRequest) -> Result<CompareReport> {
     let metric_rows = build_rows(&baseline.summary_kv, &candidate.summary_kv);
     let audit_rows = build_rows(&baseline.audit_kv, &candidate.audit_kv);
     let data_quality_rows = build_rows(&baseline.data_quality_kv, &candidate.data_quality_kv);
+    let research_rows = build_rows(&baseline.research_kv, &candidate.research_kv);
     let winner_summary = build_winner_summary(&metric_rows);
 
     let report = CompareReport {
@@ -58,6 +60,7 @@ pub fn compare_runs(req: &CompareRequest) -> Result<CompareReport> {
         metric_rows,
         audit_rows,
         data_quality_rows,
+        research_rows,
     };
 
     write_compare_outputs(&req.output_dir, &report)?;
@@ -69,12 +72,19 @@ struct RunSnapshot {
     summary_kv: BTreeMap<String, String>,
     audit_kv: BTreeMap<String, String>,
     data_quality_kv: BTreeMap<String, String>,
+    research_kv: BTreeMap<String, String>,
 }
 
 fn load_run_snapshot(dir: &Path) -> Result<RunSnapshot> {
     let summary_path = dir.join("summary.txt");
     let audit_path = dir.join("audit_snapshot.json");
     let dq_report = dir.join("data_quality_report.csv");
+    let research_summary_path = if dir.join("research_report_summary.txt").exists() {
+        dir.join("research_report_summary.txt")
+    } else {
+        dir.join("research_report")
+            .join("research_report_summary.txt")
+    };
 
     if !summary_path.exists() {
         return Err(anyhow!("missing summary.txt in {}", dir.display()));
@@ -95,11 +105,19 @@ fn load_run_snapshot(dir: &Path) -> Result<RunSnapshot> {
     } else {
         BTreeMap::from([("status".to_string(), "missing".to_string())])
     };
+    let research_kv = if research_summary_path.exists() {
+        let text = fs::read_to_string(&research_summary_path)
+            .with_context(|| format!("read {}", research_summary_path.display()))?;
+        parse_research_summary(&text)
+    } else {
+        BTreeMap::from([("status".to_string(), "missing".to_string())])
+    };
 
     Ok(RunSnapshot {
         summary_kv,
         audit_kv,
         data_quality_kv,
+        research_kv,
     })
 }
 
@@ -232,6 +250,33 @@ fn parse_data_quality_csv(path: &Path) -> Result<BTreeMap<String, String>> {
     ]))
 }
 
+fn parse_research_summary(text: &str) -> BTreeMap<String, String> {
+    let keep_prefixes = [
+        "top_regime_leader_",
+        "dominant_regime_factor",
+        "positive_regime_leader_count",
+        "rotation_default_horizon_days",
+        "current_rotation_",
+        "dominant_rotation_",
+        "rotation_switches",
+        "latest_rotation_streak_",
+        "regime_rotation_",
+        "top_regime_transition_",
+        "latest_regime_transition_",
+        "avg_regime_transition_gap_days",
+    ];
+    let mut out = BTreeMap::new();
+    for (key, value) in parse_kv_lines(text) {
+        if keep_prefixes.iter().any(|prefix| key.starts_with(prefix)) {
+            out.insert(key, value);
+        }
+    }
+    if out.is_empty() {
+        out.insert("status".to_string(), "empty".to_string());
+    }
+    out
+}
+
 fn build_rows(
     baseline: &BTreeMap<String, String>,
     candidate: &BTreeMap<String, String>,
@@ -344,6 +389,13 @@ fn write_compare_outputs(output_dir: &Path, report: &CompareReport) -> Result<()
     .context("write compare markdown")?;
     fs::write(output_dir.join("compare_report.html"), render_html(report))
         .context("write compare html")?;
+    fs::write(output_dir.join("compare_report.csv"), render_csv(report))
+        .context("write compare csv")?;
+    fs::write(
+        output_dir.join("research_compare.csv"),
+        render_section_csv("research", &report.research_rows),
+    )
+    .context("write research compare csv")?;
     Ok(())
 }
 
@@ -383,6 +435,45 @@ fn render_markdown(report: &CompareReport) -> String {
     out.push_str(&render_md_table("Audit", &report.audit_rows));
     out.push('\n');
     out.push_str(&render_md_table("Data Quality", &report.data_quality_rows));
+    out.push('\n');
+    out.push_str(&render_md_table("Research", &report.research_rows));
+    out
+}
+
+fn render_csv(report: &CompareReport) -> String {
+    let mut out = String::from("section,key,baseline,candidate,changed\n");
+    for (section, rows) in [
+        ("metrics", &report.metric_rows),
+        ("audit", &report.audit_rows),
+        ("data_quality", &report.data_quality_rows),
+        ("research", &report.research_rows),
+    ] {
+        for row in rows {
+            out.push_str(&format!(
+                "\"{}\",\"{}\",\"{}\",\"{}\",{}\n",
+                section,
+                row.key.replace('"', "\"\""),
+                row.baseline.replace('"', "\"\""),
+                row.candidate.replace('"', "\"\""),
+                if row.changed { "yes" } else { "no" }
+            ));
+        }
+    }
+    out
+}
+
+fn render_section_csv(section: &str, rows: &[CompareField]) -> String {
+    let mut out = String::from("section,key,baseline,candidate,changed\n");
+    for row in rows {
+        out.push_str(&format!(
+            "\"{}\",\"{}\",\"{}\",\"{}\",{}\n",
+            section,
+            row.key.replace('"', "\"\""),
+            row.baseline.replace('"', "\"\""),
+            row.candidate.replace('"', "\"\""),
+            if row.changed { "yes" } else { "no" }
+        ));
+    }
     out
 }
 
@@ -407,6 +498,7 @@ fn render_html(report: &CompareReport) -> String {
     let metrics = render_html_rows(&report.metric_rows);
     let audit = render_html_rows(&report.audit_rows);
     let dq = render_html_rows(&report.data_quality_rows);
+    let research = render_html_rows(&report.research_rows);
     let wins_html = render_summary_items(&report.winner_summary.wins);
     let losses_html = render_summary_items(&report.winner_summary.losses);
     let neutral_html = render_summary_items(&report.winner_summary.neutral);
@@ -478,6 +570,7 @@ th {{ color: var(--muted); font-weight: 700; }}
       <section class="panel"><h2>Metrics</h2><table><thead><tr><th>key</th><th>baseline</th><th>candidate</th><th>changed</th></tr></thead><tbody>{metrics}</tbody></table></section>
       <section class="panel"><h2>Audit</h2><table><thead><tr><th>key</th><th>baseline</th><th>candidate</th><th>changed</th></tr></thead><tbody>{audit}</tbody></table></section>
       <section class="panel"><h2>Data Quality</h2><table><thead><tr><th>key</th><th>baseline</th><th>candidate</th><th>changed</th></tr></thead><tbody>{dq}</tbody></table></section>
+      <section class="panel"><h2>Research</h2><table><thead><tr><th>key</th><th>baseline</th><th>candidate</th><th>changed</th></tr></thead><tbody>{research}</tbody></table></section>
     </div>
   </div>
 </body>
@@ -491,7 +584,8 @@ th {{ color: var(--muted); font-weight: 700; }}
         neutral_html = neutral_html,
         metrics = metrics,
         audit = audit,
-        dq = dq
+        dq = dq,
+        research = research
     )
 }
 
@@ -587,6 +681,16 @@ mod tests {
             "market,rows,status,return_outliers,large_gaps,non_trading_day_rows\nUS,10,WARN,1,0,2\n",
         )
         .expect("dq");
+        fs::write(
+            base.join("research_report_summary.txt"),
+            "top_regime_leader_market=US\ncurrent_rotation_leader_factor=momentum\nrotation_switches=1\ntop_regime_transition_market=US\nlatest_regime_transition_date=2026-01-01\n",
+        )
+        .expect("research");
+        fs::write(
+            cand.join("research_report_summary.txt"),
+            "top_regime_leader_market=JP\ncurrent_rotation_leader_factor=volume\nrotation_switches=2\ntop_regime_transition_market=JP\nlatest_regime_transition_date=2026-01-02\n",
+        )
+        .expect("research");
 
         let report = compare_runs(&CompareRequest {
             baseline_dir: base,
@@ -596,13 +700,17 @@ mod tests {
         .expect("compare");
 
         assert!(!report.metric_rows.is_empty());
+        assert!(!report.research_rows.is_empty());
         assert_eq!(report.winner_summary.winner, "candidate");
         assert!(!report.winner_summary.wins.is_empty());
         assert!(out.join("compare_report.md").exists());
         assert!(out.join("compare_report.html").exists());
         assert!(out.join("compare_report.json").exists());
+        assert!(out.join("compare_report.csv").exists());
+        assert!(out.join("research_compare.csv").exists());
         let html = fs::read_to_string(out.join("compare_report.html")).expect("html");
         assert!(html.contains("winner summary"));
         assert!(html.contains("Candidate Wins"));
+        assert!(html.contains("Research"));
     }
 }
