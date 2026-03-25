@@ -397,6 +397,7 @@ struct DashboardI18nText {
     walk_forward_winner_board: String,
     regime_aware_leaderboard: String,
     factor_rotation_monitor: String,
+    regime_rotation_matrix: String,
     quantile_ladder: String,
     regime_conditional_decay: String,
     folds: String,
@@ -411,6 +412,9 @@ struct DashboardI18nText {
     top_regime_leader: String,
     positive_regimes: String,
     current_rotation_leader: String,
+    rotation_focus: String,
+    aligned_regimes: String,
+    mismatch_regimes: String,
     rotation_switches: String,
     leader_streak: String,
     horizon_days: String,
@@ -544,6 +548,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         walk_forward_winner_board: t.walk_forward_winner_board.to_string(),
         regime_aware_leaderboard: t.regime_aware_leaderboard.to_string(),
         factor_rotation_monitor: t.factor_rotation_monitor.to_string(),
+        regime_rotation_matrix: t.regime_rotation_matrix.to_string(),
         quantile_ladder: t.quantile_ladder.to_string(),
         regime_conditional_decay: t.regime_conditional_decay.to_string(),
         folds: t.folds.to_string(),
@@ -558,6 +563,9 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         top_regime_leader: t.top_regime_leader.to_string(),
         positive_regimes: t.positive_regimes.to_string(),
         current_rotation_leader: t.current_rotation_leader.to_string(),
+        rotation_focus: t.rotation_focus.to_string(),
+        aligned_regimes: t.aligned_regimes.to_string(),
+        mismatch_regimes: t.mismatch_regimes.to_string(),
         rotation_switches: t.rotation_switches.to_string(),
         leader_streak: t.leader_streak.to_string(),
         horizon_days: t.horizon_days.to_string(),
@@ -1260,6 +1268,36 @@ th {{ color: var(--muted); font-weight: 600; }}
                 </tr>
               </thead>
               <tbody id="rotation-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 12px;">
+        <div class="mini-toolbar">
+          <span class="subtle-title" id="regime-rotation-title" style="margin:0;">{regime_rotation_matrix}</span>
+          <label class="pill"><span id="regime-rotation-market-label">{market}</span>
+            <select id="research-regime-rotation-market" class="select"></select>
+          </label>
+        </div>
+        <div class="mini-grid" id="regime-rotation-kpis"></div>
+        <div class="grid" style="margin-top:10px;">
+          <div class="chart-shell">
+            <div id="regime-rotation-cards" class="regime-grid"></div>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th id="regime-rotation-th-market">{market}</th>
+                  <th id="regime-rotation-th-bucket">{regime_bucket}</th>
+                  <th id="regime-rotation-th-factor">{factors}</th>
+                  <th id="regime-rotation-th-horizon">{horizon_days}</th>
+                  <th id="regime-rotation-th-rotation">{rotation_focus}</th>
+                  <th id="regime-rotation-th-switches">{rotation_switches}</th>
+                  <th id="regime-rotation-th-status">{status}</th>
+                </tr>
+              </thead>
+              <tbody id="regime-rotation-rows"></tbody>
             </table>
           </div>
         </div>
@@ -2689,6 +2727,50 @@ function buildRegimeLeaderRows(metric) {{
   }});
 }}
 
+function buildRotationSnapshots() {{
+  const snapshots = new Map();
+  const horizons = [...new Set((researchRollingRows || []).map((r) => Number(r.horizon_days || 0)).filter(Boolean))].sort((a, b) => a - b);
+  horizons.forEach((horizon) => {{
+    const rows = (researchRollingRows || []).filter((r) => Number(r.horizon_days || 0) === horizon);
+    const byDate = new Map();
+    rows.forEach((row) => {{
+      const key = String(row.date || '');
+      const current = byDate.get(key);
+      if (!current || Number(row.ic || 0) > Number(current.ic || 0)) {{
+        byDate.set(key, row);
+      }}
+    }});
+    const leaders = [...byDate.values()].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    const counts = new Map();
+    leaders.forEach((row) => counts.set(String(row.factor || '-'), (counts.get(String(row.factor || '-')) || 0) + 1));
+    const dominant = [...counts.entries()].sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0])))[0] || ['-', 0];
+    let switches = 0;
+    for (let i = 1; i < leaders.length; i += 1) {{
+      if (String(leaders[i - 1].factor || '') !== String(leaders[i].factor || '')) switches += 1;
+    }}
+    const last = leaders[leaders.length - 1] || null;
+    const streakFactor = last ? String(last.factor || '-') : '-';
+    let streakCount = 0;
+    for (let i = leaders.length - 1; i >= 0; i -= 1) {{
+      if (String(leaders[i].factor || '') !== streakFactor) break;
+      streakCount += 1;
+    }}
+    snapshots.set(horizon, {{
+      horizon,
+      leaders,
+      dominant_factor: String(dominant[0] || '-'),
+      dominant_count: Number(dominant[1] || 0),
+      switches,
+      current_date: last ? String(last.date || '-') : '-',
+      current_factor: last ? String(last.factor || '-') : '-',
+      current_ic: last ? Number(last.ic || 0) : 0,
+      streak_factor: streakFactor,
+      streak_count: streakCount,
+    }});
+  }});
+  return snapshots;
+}}
+
 function renderRegimeLeaderboard(text) {{
   const marketSel = document.getElementById('research-regime-leaderboard-market');
   const metricSel = document.getElementById('research-regime-leaderboard-metric');
@@ -2751,16 +2833,9 @@ function renderFactorRotation(text) {{
     horizonSel.value = horizons.map(String).includes(prevHorizon) ? prevHorizon : String(horizons[horizons.length - 1]);
   }}
   const horizon = Number(horizonSel.value || 0);
-  const rows = (researchRollingRows || []).filter((r) => Number(r.horizon_days || 0) === horizon);
-  const byDate = new Map();
-  rows.forEach((row) => {{
-    const key = String(row.date || '');
-    const current = byDate.get(key);
-    if (!current || Number(row.ic || 0) > Number(current.ic || 0)) {{
-      byDate.set(key, row);
-    }}
-  }});
-  const leaders = [...byDate.values()].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  const rotationSnapshots = buildRotationSnapshots();
+  const snapshot = rotationSnapshots.get(horizon);
+  const leaders = snapshot ? snapshot.leaders : [];
   const kpis = document.getElementById('rotation-kpis');
   const cards = document.getElementById('rotation-cards');
   const body = document.getElementById('rotation-rows');
@@ -2771,24 +2846,13 @@ function renderFactorRotation(text) {{
     return;
   }}
 
-  const counts = new Map();
-  leaders.forEach((row) => counts.set(String(row.factor || '-'), (counts.get(String(row.factor || '-')) || 0) + 1));
-  const dominant = [...counts.entries()].sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0) || String(a[0]).localeCompare(String(b[0])))[0] || ['-', 0];
-  let switches = 0;
-  for (let i = 1; i < leaders.length; i += 1) {{
-    if (String(leaders[i - 1].factor || '') !== String(leaders[i].factor || '')) switches += 1;
-  }}
   const last = leaders[leaders.length - 1];
-  const streakFactor = String(last.factor || '-');
-  let streakCount = 0;
-  for (let i = leaders.length - 1; i >= 0; i -= 1) {{
-    if (String(leaders[i].factor || '') !== streakFactor) break;
-    streakCount += 1;
-  }}
+  const streakFactor = snapshot ? snapshot.streak_factor : String(last.factor || '-');
+  const streakCount = snapshot ? snapshot.streak_count : 0;
   const stats = [
     {{ k: text.current_rotation_leader, v: `${{last.date}} | ${{last.factor}} | IC=${{Number(last.ic || 0).toFixed(4)}}` }},
-    {{ k: text.dominant_winner, v: String(dominant[0]) }},
-    {{ k: text.rotation_switches, v: String(switches) }},
+    {{ k: text.dominant_winner, v: snapshot ? snapshot.dominant_factor : '-' }},
+    {{ k: text.rotation_switches, v: String(snapshot ? snapshot.switches : 0) }},
     {{ k: text.leader_streak, v: `${{streakFactor}} | ${{streakCount}}` }},
   ];
   kpis.innerHTML = stats.map((it) => `<div class="mini-kpi"><div class="k">${{it.k}}</div><div class="v">${{esc(it.v)}}</div></div>`).join('');
@@ -2803,6 +2867,68 @@ function renderFactorRotation(text) {{
     <td>${{horizon}}</td>
     <td>${{Number(row.ic || 0).toFixed(4)}}</td>
     <td>${{row.observations}}</td>
+  </tr>`).join('');
+}}
+
+function buildRegimeRotationRows() {{
+  const rotationSnapshots = buildRotationSnapshots();
+  return buildRegimeLeaderRows('ic').map((row) => {{
+    const snapshot = rotationSnapshots.get(Number(row.horizon_days || 0));
+    const rotationFactor = snapshot ? snapshot.dominant_factor : '-';
+    const aligned = !!snapshot && rotationFactor !== '-' && String(row.factor || '') === rotationFactor;
+    return {{
+      ...row,
+      rotation_factor: rotationFactor,
+      rotation_switches: snapshot ? snapshot.switches : 0,
+      rotation_current_factor: snapshot ? snapshot.current_factor : '-',
+      rotation_current_date: snapshot ? snapshot.current_date : '-',
+      aligned,
+    }};
+  }}).sort((a, b) => Number(b.aligned) - Number(a.aligned) || Number(b.ic || 0) - Number(a.ic || 0));
+}}
+
+function renderRegimeRotationMatrix(text) {{
+  const marketSel = document.getElementById('research-regime-rotation-market');
+  const prevMarket = marketSel.value || 'ALL';
+  const allRows = buildRegimeRotationRows();
+  const markets = [...new Set(allRows.map((row) => row.market).filter(Boolean))].sort();
+  marketSel.innerHTML = ['ALL', ...markets].map((m) => `<option value="${{esc(m)}}">${{esc(m === 'ALL' ? text.all : m)}}</option>`).join('');
+  marketSel.value = ['ALL', ...markets].includes(prevMarket) ? prevMarket : 'ALL';
+  const rows = allRows.filter((row) => marketSel.value === 'ALL' || row.market === marketSel.value);
+  const kpis = document.getElementById('regime-rotation-kpis');
+  const cards = document.getElementById('regime-rotation-cards');
+  const body = document.getElementById('regime-rotation-rows');
+  if (rows.length === 0) {{
+    kpis.innerHTML = `<div class="mini-kpi"><div class="k">${{text.regime_rotation_matrix}}</div><div class="v">-</div></div>`;
+    cards.innerHTML = `<div class="sub">regime_decay.csv + rolling_ic.csv / research_report.json</div>`;
+    body.innerHTML = `<tr><td colspan="7" class="sub">regime_decay.csv + rolling_ic.csv / research_report.json</td></tr>`;
+    return;
+  }}
+
+  const alignedCount = rows.filter((row) => row.aligned).length;
+  const mismatchedCount = rows.length - alignedCount;
+  const ratio = rows.length ? (alignedCount / rows.length) : 0;
+  const focusRow = rows.find((row) => row.aligned) || rows[0];
+  const stats = [
+    {{ k: text.rotation_focus, v: `${{focusRow.market}} | ${{focusRow.regime_bucket}} | ${{focusRow.rotation_factor}} | ${{focusRow.horizon_days}}d` }},
+    {{ k: text.aligned_regimes, v: String(alignedCount) }},
+    {{ k: text.mismatch_regimes, v: String(mismatchedCount) }},
+    {{ k: text.winner_concentration, v: `${{(ratio * 100).toFixed(1)}}%` }},
+  ];
+  kpis.innerHTML = stats.map((it) => `<div class="mini-kpi"><div class="k">${{it.k}}</div><div class="v">${{esc(it.v)}}</div></div>`).join('');
+  cards.innerHTML = rows.slice(0, 8).map((row) => `<div class="regime-card">
+    <div class="regime-title">${{esc(row.market)}} / ${{esc(row.regime_bucket)}}</div>
+    <div class="regime-main">${{esc(row.factor)}} vs ${{esc(row.rotation_factor)}}</div>
+    <div class="regime-sub">${{text.horizon_days}}=${{row.horizon_days}} | ${{text.rotation_switches}}=${{row.rotation_switches}} | ${{text.status}}=${{row.aligned ? text.healthy : text.risk}}</div>
+  </div>`).join('');
+  body.innerHTML = rows.map((row) => `<tr>
+    <td>${{esc(row.market)}}</td>
+    <td>${{esc(row.regime_bucket)}}</td>
+    <td>${{esc(row.factor)}}</td>
+    <td>${{row.horizon_days}}</td>
+    <td>${{esc(row.rotation_factor)}}</td>
+    <td>${{row.rotation_switches}}</td>
+    <td>${{esc(row.aligned ? text.healthy : text.risk)}}</td>
   </tr>`).join('');
 }}
 
@@ -2900,11 +3026,13 @@ function renderResearch(text) {{
     (`rolling=${{(researchRollingRows || []).length}}`),
     (`quintile=${{(researchQuintileRows || []).length}}`),
     (`regime_decay=${{(researchRegimeDecayRows || []).length}}`),
+    (`regime_rotation=${{buildRegimeRotationRows().length}}`),
   ].filter(Boolean);
   document.getElementById('research-stats').textContent = stats.join(' | ');
   renderWalkForwardBoard(text);
   renderRegimeLeaderboard(text);
   renderFactorRotation(text);
+  renderRegimeRotationMatrix(text);
   renderResearchCharts(text);
   renderRegime(text);
 }}
@@ -3135,9 +3263,11 @@ function applyLanguage(lang) {{
   document.getElementById('walk-forward-title').textContent = text.walk_forward_winner_board;
   document.getElementById('regime-leaderboard-title').textContent = text.regime_aware_leaderboard;
   document.getElementById('rotation-title').textContent = text.factor_rotation_monitor;
+  document.getElementById('regime-rotation-title').textContent = text.regime_rotation_matrix;
   document.getElementById('regime-leaderboard-market-label').textContent = text.market;
   document.getElementById('regime-leaderboard-metric-label').textContent = text.metric;
   document.getElementById('rotation-horizon-label').textContent = text.horizon_days;
+  document.getElementById('regime-rotation-market-label').textContent = text.market;
   document.getElementById('walk-forward-fold').textContent = text.folds;
   document.getElementById('walk-forward-plugin').textContent = text.plugin;
   document.getElementById('walk-forward-method').textContent = text.method;
@@ -3155,6 +3285,13 @@ function applyLanguage(lang) {{
   document.getElementById('rotation-th-horizon').textContent = text.horizon_days;
   document.getElementById('rotation-th-ic').textContent = text.ic_short;
   document.getElementById('rotation-th-observations').textContent = text.observations;
+  document.getElementById('regime-rotation-th-market').textContent = text.market;
+  document.getElementById('regime-rotation-th-bucket').textContent = text.regime_bucket;
+  document.getElementById('regime-rotation-th-factor').textContent = text.factors;
+  document.getElementById('regime-rotation-th-horizon').textContent = text.horizon_days;
+  document.getElementById('regime-rotation-th-rotation').textContent = text.rotation_focus;
+  document.getElementById('regime-rotation-th-switches').textContent = text.rotation_switches;
+  document.getElementById('regime-rotation-th-status').textContent = text.status;
   document.getElementById('decay-chart-title').textContent = text.decay_overview;
   document.getElementById('decay-title').textContent = text.decay_overview;
   document.getElementById('rolling-chart-title').textContent = text.rolling_ic;
@@ -3476,6 +3613,7 @@ document.getElementById('research-regime-decay-bucket').addEventListener('change
 document.getElementById('research-regime-leaderboard-market').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('research-regime-leaderboard-metric').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('research-rotation-horizon').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
+document.getElementById('research-regime-rotation-market').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('strategy-market-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-plugin-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-command-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
@@ -3566,6 +3704,7 @@ refreshFromFiles();
         walk_forward_winner_board = text.walk_forward_winner_board,
         regime_aware_leaderboard = text.regime_aware_leaderboard,
         factor_rotation_monitor = text.factor_rotation_monitor,
+        regime_rotation_matrix = text.regime_rotation_matrix,
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
         regime_split = text.regime_split,
@@ -3580,6 +3719,8 @@ refreshFromFiles();
         observations = text.observations,
         composite_alpha = text.composite_alpha,
         regime_bucket = text.regime_bucket,
+        rotation_focus = text.rotation_focus,
+        rotation_switches = text.rotation_switches,
         monotonicity = text.monotonicity,
         summary_html = summary_html,
         research_summary_html = research_summary_html,
@@ -4676,7 +4817,7 @@ mod tests {
         .expect("write equity");
         fs::write(
             output_dir.join("research_report_summary.txt"),
-            "folds=3\navg_test_sharpe=1.2345\nbest_decay_factor=momentum\nbest_decay_horizon_days=5\nbest_decay_ic=0.2222\nlatest_rolling_factor=volume\nlatest_rolling_horizon_days=3\nlatest_rolling_ic=0.1111\nbest_monotonic_factor=momentum\nbest_monotonic_horizon_days=5\nbest_monotonicity_score=0.9500\nbest_regime_decay_market=US\nbest_regime_decay_bucket=trend_up_low_vol\nbest_regime_decay_factor=composite\nbest_regime_decay_horizon_days=5\nbest_regime_decay_ic=0.1800\ndominant_winner_strategy_plugin=my_alpha\ndominant_winner_portfolio_method=hrp\ndominant_winner_count=2\ndominant_winner_concentration=66.67%\nunstable_folds=1\ntop_regime_leader_market=US\ntop_regime_leader_bucket=trend_up_low_vol\ntop_regime_leader_factor=composite\ntop_regime_leader_horizon_days=5\ntop_regime_leader_ic=0.1800\ndominant_regime_factor=composite\ndominant_regime_factor_count=2\navg_regime_leader_ic=0.1450\npositive_regime_leader_count=2\nrotation_default_horizon_days=3\ncurrent_rotation_date=2026-01-04\ncurrent_rotation_leader_factor=volume\ncurrent_rotation_leader_ic=0.1300\ndominant_rotation_factor=momentum\ndominant_rotation_factor_count=2\nrotation_switches=1\nlatest_rotation_streak_factor=volume\nlatest_rotation_streak_count=1\n",
+            "folds=3\navg_test_sharpe=1.2345\nbest_decay_factor=momentum\nbest_decay_horizon_days=5\nbest_decay_ic=0.2222\nlatest_rolling_factor=volume\nlatest_rolling_horizon_days=3\nlatest_rolling_ic=0.1111\nbest_monotonic_factor=momentum\nbest_monotonic_horizon_days=5\nbest_monotonicity_score=0.9500\nbest_regime_decay_market=US\nbest_regime_decay_bucket=trend_up_low_vol\nbest_regime_decay_factor=composite\nbest_regime_decay_horizon_days=5\nbest_regime_decay_ic=0.1800\ndominant_winner_strategy_plugin=my_alpha\ndominant_winner_portfolio_method=hrp\ndominant_winner_count=2\ndominant_winner_concentration=66.67%\nunstable_folds=1\ntop_regime_leader_market=US\ntop_regime_leader_bucket=trend_up_low_vol\ntop_regime_leader_factor=composite\ntop_regime_leader_horizon_days=5\ntop_regime_leader_ic=0.1800\ndominant_regime_factor=composite\ndominant_regime_factor_count=2\navg_regime_leader_ic=0.1450\npositive_regime_leader_count=2\nrotation_default_horizon_days=3\ncurrent_rotation_date=2026-01-04\ncurrent_rotation_leader_factor=volume\ncurrent_rotation_leader_ic=0.1300\ndominant_rotation_factor=momentum\ndominant_rotation_factor_count=2\nrotation_switches=1\nlatest_rotation_streak_factor=volume\nlatest_rotation_streak_count=1\nregime_rotation_focus_market=JP\nregime_rotation_focus_bucket=trend_down_high_vol\nregime_rotation_focus_factor=composite\nregime_rotation_focus_horizon_days=3\naligned_regime_count=1\nmismatched_regime_count=1\nregime_rotation_alignment_ratio=50.00%\n",
         )
         .expect("write research summary");
         fs::write(
@@ -4765,6 +4906,7 @@ mod tests {
         assert!(html.contains("Walk-Forward Winner Board"));
         assert!(html.contains("Regime-Aware Leaderboard"));
         assert!(html.contains("Factor Rotation Monitor"));
+        assert!(html.contains("Regime x Rotation Matrix"));
         assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("Public Leaderboard"));
         assert!(html.contains("strategy-detail-rows"));
@@ -4810,8 +4952,13 @@ mod tests {
         assert!(html.contains("regime-leaderboard-rows"));
         assert!(html.contains("rotation-rows"));
         assert!(html.contains("rotation-kpis"));
+        assert!(html.contains("regime-rotation-rows"));
+        assert!(html.contains("regime-rotation-kpis"));
+        assert!(html.contains("research-regime-rotation-market"));
         assert!(html.contains("top_regime_leader_market"));
         assert!(html.contains("current_rotation_leader_factor"));
+        assert!(html.contains("regime_rotation_focus_market"));
+        assert!(html.contains("aligned_regime_count"));
         assert!(html.contains("trend_down_high_vol"));
         assert!(html.contains("best_monotonic_factor"));
         assert!(html.contains("dominant_winner_strategy_plugin"));

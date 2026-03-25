@@ -456,6 +456,38 @@ fn render_snapshot(
                 .get("latest_rotation_streak_count")
                 .map_or("-", String::as_str),
         )?;
+        writeln!(
+            out,
+            "Regime x Rotation | focus={} {} {} {}d aligned={} mismatched={} ratio={}",
+            snapshot
+                .research_report
+                .get("regime_rotation_focus_market")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("regime_rotation_focus_bucket")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("regime_rotation_focus_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("regime_rotation_focus_horizon_days")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("aligned_regime_count")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("mismatched_regime_count")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("regime_rotation_alignment_ratio")
+                .map_or("-", String::as_str),
+        )?;
     }
 
     out.flush()?;

@@ -1347,9 +1347,81 @@ fn render_summary(report: &ResearchReport) -> String {
     } else {
         ("-".to_string(), 0usize)
     };
+    let mut rotation_summary_by_horizon: BTreeMap<usize, (String, usize, usize)> = BTreeMap::new();
+    {
+        let horizon_groups = report.rolling_ic_rows.iter().fold(
+            BTreeMap::<usize, Vec<&RollingIcRow>>::new(),
+            |mut acc, row| {
+                acc.entry(row.horizon_days).or_default().push(row);
+                acc
+            },
+        );
+        for (horizon, rows) in horizon_groups {
+            let mut leaders_by_date: BTreeMap<&str, &RollingIcRow> = BTreeMap::new();
+            for row in rows {
+                leaders_by_date
+                    .entry(row.date.as_str())
+                    .and_modify(|prev| {
+                        if row.ic > prev.ic {
+                            *prev = row;
+                        }
+                    })
+                    .or_insert(row);
+            }
+            let leaders = leaders_by_date.values().copied().collect::<Vec<_>>();
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for row in &leaders {
+                *counts.entry(row.factor.clone()).or_default() += 1;
+            }
+            let dominant = counts
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)))
+                .map(|(factor, count)| (factor.clone(), *count))
+                .unwrap_or_else(|| ("-".to_string(), 0));
+            let mut switches = 0usize;
+            for pair in leaders.windows(2) {
+                if pair[0].factor != pair[1].factor {
+                    switches += 1;
+                }
+            }
+            rotation_summary_by_horizon.insert(horizon, (dominant.0, dominant.1, switches));
+        }
+    }
+    let regime_rotation_rows = regime_leaders
+        .iter()
+        .map(|row| {
+            let (rotation_factor, _, switches) = rotation_summary_by_horizon
+                .get(&row.horizon_days)
+                .cloned()
+                .unwrap_or_else(|| ("-".to_string(), 0usize, 0usize));
+            let aligned = rotation_factor != "-" && row.factor == rotation_factor;
+            (row, rotation_factor, switches, aligned)
+        })
+        .collect::<Vec<_>>();
+    let aligned_regime_count = regime_rotation_rows
+        .iter()
+        .filter(|(_, _, _, aligned)| *aligned)
+        .count();
+    let mismatched_regime_count = regime_rotation_rows
+        .len()
+        .saturating_sub(aligned_regime_count);
+    let regime_rotation_alignment_ratio = if regime_rotation_rows.is_empty() {
+        0.0
+    } else {
+        aligned_regime_count as f64 / regime_rotation_rows.len() as f64
+    };
+    let regime_rotation_focus = regime_rotation_rows
+        .iter()
+        .filter(|(_, _, _, aligned)| *aligned)
+        .max_by(|a, b| a.0.ic.total_cmp(&b.0.ic))
+        .or_else(|| {
+            regime_rotation_rows
+                .iter()
+                .max_by(|a, b| a.0.ic.total_cmp(&b.0.ic))
+        });
     let latest_rolling = report.rolling_ic_rows.last();
     format!(
-        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\ntop_regime_leader_market={}\ntop_regime_leader_bucket={}\ntop_regime_leader_factor={}\ntop_regime_leader_horizon_days={}\ntop_regime_leader_ic={:.4}\ndominant_regime_factor={}\ndominant_regime_factor_count={}\navg_regime_leader_ic={:.4}\npositive_regime_leader_count={}\nrotation_default_horizon_days={}\ncurrent_rotation_date={}\ncurrent_rotation_leader_factor={}\ncurrent_rotation_leader_ic={:.4}\ndominant_rotation_factor={}\ndominant_rotation_factor_count={}\nrotation_switches={}\nlatest_rotation_streak_factor={}\nlatest_rotation_streak_count={}\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
+        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\ntop_regime_leader_market={}\ntop_regime_leader_bucket={}\ntop_regime_leader_factor={}\ntop_regime_leader_horizon_days={}\ntop_regime_leader_ic={:.4}\ndominant_regime_factor={}\ndominant_regime_factor_count={}\navg_regime_leader_ic={:.4}\npositive_regime_leader_count={}\nrotation_default_horizon_days={}\ncurrent_rotation_date={}\ncurrent_rotation_leader_factor={}\ncurrent_rotation_leader_ic={:.4}\ndominant_rotation_factor={}\ndominant_rotation_factor_count={}\nrotation_switches={}\nlatest_rotation_streak_factor={}\nlatest_rotation_streak_count={}\nregime_rotation_focus_market={}\nregime_rotation_focus_bucket={}\nregime_rotation_focus_factor={}\nregime_rotation_focus_horizon_days={}\naligned_regime_count={}\nmismatched_regime_count={}\nregime_rotation_alignment_ratio={:.2}%\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
         report.walk_forward_summary.folds,
         report.walk_forward_summary.avg_test_pnl_ratio * 100.0,
         report.walk_forward_summary.avg_test_sharpe,
@@ -1388,6 +1460,27 @@ fn render_summary(report: &ResearchReport) -> String {
         rotation_switches,
         latest_rotation_streak.0,
         latest_rotation_streak.1,
+        regime_rotation_focus
+            .map(|(row, _, _, _)| row.market.as_str())
+            .unwrap_or("-"),
+        regime_rotation_focus
+            .map(|(row, _, _, _)| row.regime_bucket.as_str())
+            .unwrap_or("-"),
+        regime_rotation_focus
+            .map(|(row, rotation_factor, _, aligned)| {
+                if *aligned {
+                    row.factor.as_str()
+                } else {
+                    rotation_factor.as_str()
+                }
+            })
+            .unwrap_or("-"),
+        regime_rotation_focus
+            .map(|(row, _, _, _)| row.horizon_days)
+            .unwrap_or(0),
+        aligned_regime_count,
+        mismatched_regime_count,
+        regime_rotation_alignment_ratio * 100.0,
         report.regime_rows.len(),
         report.factor_decay_rows.len(),
         report.factor_quintile_rows.len(),
@@ -2132,5 +2225,8 @@ mod tests {
         assert!(summary_text.contains("rotation_default_horizon_days="));
         assert!(summary_text.contains("current_rotation_leader_factor="));
         assert!(summary_text.contains("rotation_switches="));
+        assert!(summary_text.contains("regime_rotation_focus_market="));
+        assert!(summary_text.contains("aligned_regime_count="));
+        assert!(summary_text.contains("regime_rotation_alignment_ratio="));
     }
 }
