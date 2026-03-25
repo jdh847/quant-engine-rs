@@ -291,6 +291,7 @@ struct DashboardI18nText {
     title: String,
     subtitle: String,
     generated_from: String,
+    paper_ops_center: String,
     overview: String,
     series: String,
     equity: String,
@@ -369,6 +370,14 @@ struct DashboardI18nText {
     compare_hint: String,
     compare_needs_two_runs: String,
     recent_compare: String,
+    run_health: String,
+    compare_health: String,
+    audit_health: String,
+    research_health: String,
+    rotation_health: String,
+    healthy: String,
+    watch: String,
+    risk: String,
     open_report_html: String,
     open_report_json: String,
     metric_changes_label: String,
@@ -429,6 +438,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         title: t.title.to_string(),
         subtitle: t.subtitle.to_string(),
         generated_from: t.generated_from.to_string(),
+        paper_ops_center: t.paper_ops_center.to_string(),
         overview: t.overview.to_string(),
         series: t.series.to_string(),
         equity: t.equity.to_string(),
@@ -507,6 +517,14 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         compare_hint: t.compare_hint.to_string(),
         compare_needs_two_runs: t.compare_needs_two_runs.to_string(),
         recent_compare: t.recent_compare.to_string(),
+        run_health: t.run_health.to_string(),
+        compare_health: t.compare_health.to_string(),
+        audit_health: t.audit_health.to_string(),
+        research_health: t.research_health.to_string(),
+        rotation_health: t.rotation_health.to_string(),
+        healthy: t.healthy.to_string(),
+        watch: t.watch.to_string(),
+        risk: t.risk.to_string(),
         open_report_html: t.open_report_html.to_string(),
         open_report_json: t.open_report_json.to_string(),
         metric_changes_label: t.metric_changes_label.to_string(),
@@ -840,9 +858,20 @@ th {{ color: var(--muted); font-weight: 600; }}
 .compare-setup {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }}
 .compare-block {{ margin-top:10px; }}
 .compare-links {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }}
+.ops-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:12px; }}
+.ops-card {{ background: var(--panel2); border:1px solid rgba(15,23,42,0.10); border-radius:16px; padding:14px; }}
+.ops-card .top {{ display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }}
+.ops-card .label {{ color: var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+.ops-card .status {{ font-size:11px; font-weight:800; border-radius:999px; padding:4px 8px; border:1px solid rgba(15,23,42,0.10); }}
+.ops-card .status.healthy {{ color:#065f46; background:rgba(209,250,229,.80); border-color:rgba(6,95,70,.16); }}
+.ops-card .status.watch {{ color:#92400e; background:rgba(254,243,199,.85); border-color:rgba(180,83,9,.18); }}
+.ops-card .status.risk {{ color:#7f1d1d; background:rgba(254,226,226,.86); border-color:rgba(127,29,29,.16); }}
+.ops-card .main {{ font-size:18px; font-weight:800; margin-top:10px; line-height:1.25; }}
+.ops-card .sub {{ color: var(--muted); font-size:13px; margin-top:8px; line-height:1.45; }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
+  .ops-grid {{ grid-template-columns: 1fr; }}
   #chart {{ height: 280px; }}
   .filters {{ grid-template-columns: 1fr; }}
   .bar-row {{ grid-template-columns: 120px 1fr 56px; }}
@@ -869,6 +898,14 @@ th {{ color: var(--muted); font-weight: 600; }}
         <div class="pill" id="live-pill"><span class="dot" id="live-dot"></span><span id="live-status">live refresh: init</span></div>
       </div>
     </div>
+
+    <section class="panel" data-delay="1" style="margin-bottom: 16px;">
+      <div class="toolbar">
+        <h3 id="paper-ops-center" style="margin:0;">{paper_ops_center}</h3>
+        <span class="chip" id="paper-ops-chip"></span>
+      </div>
+      <div class="ops-grid" id="paper-ops-grid"></div>
+    </section>
 
     <div class="grid">
       <section class="panel" data-delay="1">
@@ -2316,6 +2353,92 @@ function researchCardValue(key) {{
   return (researchSummaryKv || {{}})[key] || '';
 }}
 
+function healthBadgeClass(level) {{
+  if (level === 'healthy') return 'healthy';
+  if (level === 'watch') return 'watch';
+  return 'risk';
+}}
+
+function renderPaperOpsCenter(text) {{
+  const root = document.getElementById('paper-ops-grid');
+  const chip = document.getElementById('paper-ops-chip');
+  const sharpe = parseNum((summaryKv || {{}}).sharpe);
+  const drawdown = parseNum((summaryKv || {{}}).max_drawdown);
+  const tradeCount = parseNum((summaryKv || {{}}).trades);
+  const dqFail = (dataQualityRows || []).filter((r) => String(r.status || '') === 'FAIL').length;
+  const dqWarn = (dataQualityRows || []).filter((r) => String(r.status || '') === 'WARN').length;
+  const auditReady = Boolean(auditConfigSha) && (auditMarkets || []).length > 0;
+  const compareWinner = recentCompare ? String(recentCompare.winner || 'tie') : 'missing';
+  const compareChanges = recentCompare
+    ? Number(recentCompare.metric_changes || 0) + Number(recentCompare.audit_changes || 0) + Number(recentCompare.data_quality_changes || 0)
+    : 0;
+  const avgTestSharpe = parseNum(researchCardValue('avg_test_sharpe'));
+  const unstableFolds = Number(researchCardValue('unstable_folds') || 0);
+  const rotationSwitches = Number(researchCardValue('rotation_switches') || 0);
+  const rotationStreak = Number(researchCardValue('latest_rotation_streak_count') || 0);
+
+  const runLevel = sharpe != null && sharpe > 0.8 && (drawdown == null || drawdown < 0.10)
+    ? 'healthy'
+    : (sharpe != null && sharpe > 0 ? 'watch' : 'risk');
+  const dqLevel = dqFail > 0 ? 'risk' : (dqWarn > 0 ? 'watch' : 'healthy');
+  const auditLevel = auditReady ? 'healthy' : 'watch';
+  const compareLevel = !recentCompare ? 'watch' : (compareChanges > 8 ? 'watch' : 'healthy');
+  const researchLevel = avgTestSharpe != null && avgTestSharpe > 0.8 && unstableFolds === 0
+    ? 'healthy'
+    : (avgTestSharpe != null && avgTestSharpe > 0 ? 'watch' : 'risk');
+  const rotationLevel = rotationStreak >= 2 && rotationSwitches <= 2 ? 'healthy' : (rotationSwitches <= 4 ? 'watch' : 'risk');
+
+  const labelFor = (level) => level === 'healthy' ? text.healthy : (level === 'watch' ? text.watch : text.risk);
+  const cards = [
+    {{
+      label: text.run_health,
+      level: runLevel,
+      main: `Sharpe=${{sharpe == null ? '-' : sharpe.toFixed(2)}} | DD=${{fmtPct(drawdown)}}`,
+      sub: `${{text.kpi_trades}}=${{tradeCount == null ? '-' : Math.round(tradeCount)}}`,
+    }},
+    {{
+      label: text.data_quality,
+      level: dqLevel,
+      main: `PASS=${{(dataQualityRows || []).filter((r) => String(r.status || '') === 'PASS').length}} | WARN=${{dqWarn}} | FAIL=${{dqFail}}`,
+      sub: `${{text.rows}}=${{(dataQualityRows || []).reduce((acc, row) => acc + Number(row.rows || 0), 0)}}`,
+    }},
+    {{
+      label: text.audit_health,
+      level: auditLevel,
+      main: auditReady ? `config=${{shortSha(auditConfigSha)}}` : 'audit snapshot missing',
+      sub: `${{text.market}}=${{(auditMarkets || []).length}}`,
+    }},
+    {{
+      label: text.compare_health,
+      level: compareLevel,
+      main: recentCompare ? `winner=${{compareWinner}} | changes=${{compareChanges}}` : 'no compare yet',
+      sub: recentCompare ? `${{text.output_dir_label}}=${{recentCompare.output_dir || '-'}}` : text.compare_not_found,
+    }},
+    {{
+      label: text.research_health,
+      level: researchLevel,
+      main: `avg_sharpe=${{avgTestSharpe == null ? '-' : avgTestSharpe.toFixed(2)}} | unstable=${{unstableFolds}}`,
+      sub: `${{text.best_decay}}=${{researchCardValue('best_decay_factor') || '-'}} | ${{text.best_regime_decay}}=${{researchCardValue('best_regime_decay_factor') || '-'}}`,
+    }},
+    {{
+      label: text.rotation_health,
+      level: rotationLevel,
+      main: `${{text.current_rotation_leader}}=${{researchCardValue('current_rotation_leader_factor') || '-'}}`,
+      sub: `${{text.rotation_switches}}=${{rotationSwitches}} | ${{text.leader_streak}}=${{rotationStreak}}`,
+    }},
+  ];
+
+  root.innerHTML = cards.map((card) => `<div class="ops-card">
+    <div class="top">
+      <div class="label">${{esc(card.label)}}</div>
+      <div class="status ${{healthBadgeClass(card.level)}}">${{esc(labelFor(card.level))}}</div>
+    </div>
+    <div class="main">${{esc(card.main)}}</div>
+    <div class="sub">${{esc(card.sub)}}</div>
+  </div>`).join('');
+  chip.textContent = `run=${{labelFor(runLevel)}} | dq=${{labelFor(dqLevel)}} | research=${{labelFor(researchLevel)}}`;
+}}
+
 function syncResearchControls(text) {{
   const scopeSel = document.getElementById('research-decay-scope');
   const prevScope = scopeSel.value || 'ALL';
@@ -2917,6 +3040,7 @@ function applyLanguage(lang) {{
   document.getElementById('title').textContent = text.title;
   document.getElementById('subtitle').textContent = text.subtitle;
   document.getElementById('generated-from').textContent = text.generated_from;
+  document.getElementById('paper-ops-center').textContent = text.paper_ops_center;
   document.getElementById('overview').textContent = text.overview;
   document.getElementById('series-label').textContent = text.series;
   document.getElementById('equity-curve').textContent = text.equity_curve;
@@ -3078,6 +3202,7 @@ function applyLanguage(lang) {{
   document.getElementById('audit-th-holiday').textContent = text.holiday_file;
 
   setupFilters(text);
+  renderPaperOpsCenter(text);
   renderKpis(text);
   renderChart(text);
   renderTrades(text);
@@ -3376,6 +3501,7 @@ refreshFromFiles();
         title = text.title,
         subtitle = text.subtitle,
         generated_from = text.generated_from,
+        paper_ops_center = text.paper_ops_center,
         overview = text.overview,
         series = text.series,
         equity_curve = text.equity_curve,
@@ -4632,6 +4758,9 @@ mod tests {
         let xiaohongshu_cover_html =
             fs::read_to_string(output_dir.join("dashboard_cover_xiaohongshu.html"))
                 .expect("read xiaohongshu cover");
+        assert!(html.contains("Paper Ops Center"));
+        assert!(html.contains("paper-ops-grid"));
+        assert!(html.contains("paper-ops-chip"));
         assert!(html.contains("Research"));
         assert!(html.contains("Walk-Forward Winner Board"));
         assert!(html.contains("Regime-Aware Leaderboard"));

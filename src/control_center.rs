@@ -247,6 +247,39 @@ fn render_snapshot(
     }
 
     if !snapshot.research_report.is_empty() {
+        let dq_pass = snapshot.data_quality.as_ref().map(|q| q.pass).unwrap_or(0);
+        let dq_warn = snapshot.data_quality.as_ref().map(|q| q.warn).unwrap_or(0);
+        let dq_fail = snapshot.data_quality.as_ref().map(|q| q.fail).unwrap_or(0);
+        writeln!(
+            out,
+            "Ops Center | run_sharpe={} dq={}/{}/{} audit={} compare={} research_sharpe={} rotation={} switches={}",
+            snapshot.summary.get("sharpe").map_or("-", String::as_str),
+            dq_pass,
+            dq_warn,
+            dq_fail,
+            if snapshot.research_report.get("top_regime_leader_market").is_some() {
+                "ready"
+            } else {
+                "partial"
+            },
+            if root.join("compare_report.json").exists() || root.join("compare_demo").exists() {
+                "ready"
+            } else {
+                "missing"
+            },
+            snapshot
+                .research_report
+                .get("avg_test_sharpe")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("current_rotation_leader_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("rotation_switches")
+                .map_or("-", String::as_str),
+        )?;
         writeln!(
             out,
             "Research Report | folds={} avg_test_sharpe={} best_decay={} {}d ic={} latest_rolling={} {}d ic={}",
