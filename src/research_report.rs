@@ -78,6 +78,32 @@ pub struct FactorDecayRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct FactorQuintileRow {
+    pub scope: String,
+    pub factor: String,
+    pub horizon_days: usize,
+    pub observations: usize,
+    pub q1_avg_return: f64,
+    pub q2_avg_return: f64,
+    pub q3_avg_return: f64,
+    pub q4_avg_return: f64,
+    pub q5_avg_return: f64,
+    pub monotonicity_score: f64,
+    pub q5_q1_spread: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RegimeDecayRow {
+    pub market: String,
+    pub regime_bucket: String,
+    pub factor: String,
+    pub horizon_days: usize,
+    pub observations: usize,
+    pub ic: f64,
+    pub long_short_spread: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RollingIcRow {
     pub date: String,
     pub factor: String,
@@ -92,6 +118,8 @@ pub struct ResearchReport {
     pub walk_forward_rows: Vec<WalkForwardDeepDiveRow>,
     pub regime_rows: Vec<RegimeSplitRow>,
     pub factor_decay_rows: Vec<FactorDecayRow>,
+    pub factor_quintile_rows: Vec<FactorQuintileRow>,
+    pub regime_decay_rows: Vec<RegimeDecayRow>,
     pub rolling_ic_rows: Vec<RollingIcRow>,
 }
 
@@ -164,13 +192,20 @@ pub fn write_research_report(
     let walk_forward_summary = summarize_walk_forward(&walk_forward_rows);
 
     let snapshots = build_signal_snapshots(cfg, data)?;
-    let regime_rows = build_regime_split_report(cfg, data, &snapshots, req);
+    let regime_points = compute_market_regimes(cfg, data, req);
+    let regime_rows = build_regime_split_report(&regime_points, &snapshots);
     let factor_decay_rows = build_factor_decay_report(data, &snapshots, &req.factor_decay_horizons);
+    let factor_quintile_rows =
+        build_factor_quintile_report(data, &snapshots, &req.factor_decay_horizons);
+    let regime_decay_rows =
+        build_regime_decay_report(data, &snapshots, &regime_points, &req.factor_decay_horizons);
     let rolling_ic_rows = build_rolling_ic_report(data, &snapshots, &req.factor_decay_horizons);
 
     write_walk_forward_deep_dive_csv(dir.join("walk_forward_deep_dive.csv"), &walk_forward_rows)?;
     write_regime_split_csv(dir.join("regime_split.csv"), &regime_rows)?;
     write_factor_decay_csv(dir.join("factor_decay.csv"), &factor_decay_rows)?;
+    write_factor_quintile_csv(dir.join("factor_quintiles.csv"), &factor_quintile_rows)?;
+    write_regime_decay_csv(dir.join("regime_decay.csv"), &regime_decay_rows)?;
     write_rolling_ic_csv(dir.join("rolling_ic.csv"), &rolling_ic_rows)?;
 
     let report = ResearchReport {
@@ -178,6 +213,8 @@ pub fn write_research_report(
         walk_forward_rows,
         regime_rows,
         factor_decay_rows,
+        factor_quintile_rows,
+        regime_decay_rows,
         rolling_ic_rows,
     };
     let artifacts = write_summary_artifacts(dir, &report)?;
@@ -433,12 +470,9 @@ fn build_signal_snapshots_for_day(
 }
 
 fn build_regime_split_report(
-    cfg: &BotConfig,
-    data: &CsvDataPortal,
+    regime_points: &[MarketRegimePoint],
     snapshots: &[SignalSnapshot],
-    req: &ResearchReportRequest,
 ) -> Vec<RegimeSplitRow> {
-    let regime_points = compute_market_regimes(cfg, data, req);
     let mut signal_by_bucket: HashMap<(String, NaiveDate), SignalAggregate> = HashMap::new();
     for snap in snapshots {
         let entry = signal_by_bucket
@@ -509,6 +543,168 @@ fn build_regime_split_report(
         a.market
             .cmp(&b.market)
             .then_with(|| a.regime_bucket.cmp(&b.regime_bucket))
+    });
+    rows
+}
+
+fn build_factor_quintile_report(
+    data: &CsvDataPortal,
+    snapshots: &[SignalSnapshot],
+    horizons: &[usize],
+) -> Vec<FactorQuintileRow> {
+    let index = build_forward_return_index(data, horizons);
+    let mut rows = Vec::new();
+
+    for scope in scopes_from_snapshots(snapshots) {
+        for factor in [
+            "momentum",
+            "mean_reversion",
+            "low_vol",
+            "volume",
+            "composite",
+        ] {
+            for &horizon in horizons {
+                let mut pairs = Vec::new();
+                for snap in snapshots
+                    .iter()
+                    .filter(|s| scope == "ALL" || s.market == scope)
+                {
+                    let Some(fwd) = index
+                        .get(&(snap.market.clone(), snap.symbol.clone(), snap.date))
+                        .and_then(|m| m.get(&horizon))
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    let signal = factor_signal(snap, factor);
+                    pairs.push((signal, fwd));
+                }
+                if pairs.len() < 5 {
+                    continue;
+                }
+                pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let quintiles = average_quintile_returns(&pairs);
+                let monotonicity_score = pearson_corr(
+                    &quintiles
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, val)| (idx as f64 + 1.0, *val))
+                        .collect::<Vec<_>>(),
+                );
+                rows.push(FactorQuintileRow {
+                    scope: scope.clone(),
+                    factor: factor.to_string(),
+                    horizon_days: horizon,
+                    observations: pairs.len(),
+                    q1_avg_return: quintiles[0],
+                    q2_avg_return: quintiles[1],
+                    q3_avg_return: quintiles[2],
+                    q4_avg_return: quintiles[3],
+                    q5_avg_return: quintiles[4],
+                    monotonicity_score,
+                    q5_q1_spread: quintiles[4] - quintiles[0],
+                });
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        a.scope
+            .cmp(&b.scope)
+            .then_with(|| a.factor.cmp(&b.factor))
+            .then_with(|| a.horizon_days.cmp(&b.horizon_days))
+    });
+    rows
+}
+
+fn build_regime_decay_report(
+    data: &CsvDataPortal,
+    snapshots: &[SignalSnapshot],
+    regime_points: &[MarketRegimePoint],
+    horizons: &[usize],
+) -> Vec<RegimeDecayRow> {
+    let index = build_forward_return_index(data, horizons);
+    let mut regime_lookup = HashMap::new();
+    for regime in regime_points {
+        regime_lookup.insert(
+            (regime.market.clone(), regime.date),
+            format!("{}_{}", regime.trend_bucket, regime.vol_bucket),
+        );
+    }
+
+    let mut grouped: HashMap<(String, String, String, usize), Vec<(f64, f64)>> = HashMap::new();
+    for snap in snapshots {
+        let Some(regime_bucket) = regime_lookup
+            .get(&(snap.market.clone(), snap.date))
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(horizon_map) = index.get(&(snap.market.clone(), snap.symbol.clone(), snap.date))
+        else {
+            continue;
+        };
+        for &horizon in horizons {
+            let Some(forward_ret) = horizon_map.get(&horizon).copied() else {
+                continue;
+            };
+            for factor in [
+                "momentum",
+                "mean_reversion",
+                "low_vol",
+                "volume",
+                "composite",
+            ] {
+                let signal = factor_signal(snap, factor);
+                grouped
+                    .entry((
+                        snap.market.clone(),
+                        regime_bucket.clone(),
+                        factor.to_string(),
+                        horizon,
+                    ))
+                    .or_default()
+                    .push((signal, forward_ret));
+                grouped
+                    .entry((
+                        "ALL".to_string(),
+                        regime_bucket.clone(),
+                        factor.to_string(),
+                        horizon,
+                    ))
+                    .or_default()
+                    .push((signal, forward_ret));
+            }
+        }
+    }
+
+    let mut rows = grouped
+        .into_iter()
+        .filter_map(|((market, regime_bucket, factor, horizon_days), pairs)| {
+            if pairs.len() < 5 {
+                return None;
+            }
+            let mut sorted = pairs.clone();
+            sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let quintiles = average_quintile_returns(&sorted);
+            Some(RegimeDecayRow {
+                market,
+                regime_bucket,
+                factor,
+                horizon_days,
+                observations: pairs.len(),
+                ic: pearson_corr(&pairs),
+                long_short_spread: quintiles[4] - quintiles[0],
+            })
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|a, b| {
+        a.market
+            .cmp(&b.market)
+            .then_with(|| a.regime_bucket.cmp(&b.regime_bucket))
+            .then_with(|| a.factor.cmp(&b.factor))
+            .then_with(|| a.horizon_days.cmp(&b.horizon_days))
     });
     rows
 }
@@ -870,6 +1066,66 @@ fn write_factor_decay_csv(path: PathBuf, rows: &[FactorDecayRow]) -> Result<()> 
     Ok(())
 }
 
+fn write_factor_quintile_csv(path: PathBuf, rows: &[FactorQuintileRow]) -> Result<()> {
+    let mut wtr = csv::Writer::from_path(path)?;
+    wtr.write_record([
+        "scope",
+        "factor",
+        "horizon_days",
+        "observations",
+        "q1_avg_return",
+        "q2_avg_return",
+        "q3_avg_return",
+        "q4_avg_return",
+        "q5_avg_return",
+        "monotonicity_score",
+        "q5_q1_spread",
+    ])?;
+    for row in rows {
+        wtr.write_record([
+            row.scope.clone(),
+            row.factor.clone(),
+            row.horizon_days.to_string(),
+            row.observations.to_string(),
+            format!("{:.6}", row.q1_avg_return),
+            format!("{:.6}", row.q2_avg_return),
+            format!("{:.6}", row.q3_avg_return),
+            format!("{:.6}", row.q4_avg_return),
+            format!("{:.6}", row.q5_avg_return),
+            format!("{:.6}", row.monotonicity_score),
+            format!("{:.6}", row.q5_q1_spread),
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
+fn write_regime_decay_csv(path: PathBuf, rows: &[RegimeDecayRow]) -> Result<()> {
+    let mut wtr = csv::Writer::from_path(path)?;
+    wtr.write_record([
+        "market",
+        "regime_bucket",
+        "factor",
+        "horizon_days",
+        "observations",
+        "ic",
+        "long_short_spread",
+    ])?;
+    for row in rows {
+        wtr.write_record([
+            row.market.clone(),
+            row.regime_bucket.clone(),
+            row.factor.clone(),
+            row.horizon_days.to_string(),
+            row.observations.to_string(),
+            format!("{:.6}", row.ic),
+            format!("{:.6}", row.long_short_spread),
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
 fn write_rolling_ic_csv(path: PathBuf, rows: &[RollingIcRow]) -> Result<()> {
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(["date", "factor", "horizon_days", "observations", "ic"])?;
@@ -980,9 +1236,17 @@ fn render_summary(report: &ResearchReport) -> String {
         .factor_decay_rows
         .iter()
         .max_by(|a, b| a.ic.total_cmp(&b.ic));
+    let best_monotonic = report
+        .factor_quintile_rows
+        .iter()
+        .max_by(|a, b| a.monotonicity_score.total_cmp(&b.monotonicity_score));
+    let best_regime_decay = report
+        .regime_decay_rows
+        .iter()
+        .max_by(|a, b| a.ic.total_cmp(&b.ic));
     let latest_rolling = report.rolling_ic_rows.last();
     format!(
-        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\nregime_rows={}\nfactor_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
+        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
         report.walk_forward_summary.folds,
         report.walk_forward_summary.avg_test_pnl_ratio * 100.0,
         report.walk_forward_summary.avg_test_sharpe,
@@ -990,10 +1254,24 @@ fn render_summary(report: &ResearchReport) -> String {
         report.walk_forward_summary.strategy_turnover_ratio * 100.0,
         report.regime_rows.len(),
         report.factor_decay_rows.len(),
+        report.factor_quintile_rows.len(),
+        report.regime_decay_rows.len(),
         report.rolling_ic_rows.len(),
         best_decay.map(|r| r.factor.as_str()).unwrap_or("-"),
         best_decay.map(|r| r.horizon_days).unwrap_or(0),
         best_decay.map(|r| r.ic).unwrap_or(0.0),
+        best_monotonic.map(|r| r.factor.as_str()).unwrap_or("-"),
+        best_monotonic.map(|r| r.horizon_days).unwrap_or(0),
+        best_monotonic
+            .map(|r| r.monotonicity_score)
+            .unwrap_or(0.0),
+        best_regime_decay.map(|r| r.market.as_str()).unwrap_or("-"),
+        best_regime_decay
+            .map(|r| r.regime_bucket.as_str())
+            .unwrap_or("-"),
+        best_regime_decay.map(|r| r.factor.as_str()).unwrap_or("-"),
+        best_regime_decay.map(|r| r.horizon_days).unwrap_or(0),
+        best_regime_decay.map(|r| r.ic).unwrap_or(0.0),
         latest_rolling.map(|r| r.factor.as_str()).unwrap_or("-"),
         latest_rolling.map(|r| r.horizon_days).unwrap_or(0),
         latest_rolling.map(|r| r.ic).unwrap_or(0.0),
@@ -1106,6 +1384,27 @@ fn render_html(report: &ResearchReport) -> String {
     </section>
     <section>
       <div class="toolbar">
+        <h2 style="margin-right:auto;">Quantile Ladder</h2>
+        <label class="pill">Scope
+          <select id="quintile-scope"></select>
+        </label>
+        <label class="pill">Horizon
+          <select id="quintile-horizon"></select>
+        </label>
+      </div>
+      <div class="grid-2">
+        <div class="card chart-card">
+          <div class="sub">Q1 to Q5 forward returns and monotonicity per factor.</div>
+          <div id="quintile-chart"></div>
+        </div>
+        <div class="card">
+          <div class="sub">Full quintile table</div>
+          <div id="quintile-table"></div>
+        </div>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
         <h2 style="margin-right:auto;">Rolling IC</h2>
         <label class="pill">Horizon
           <select id="rolling-horizon"></select>
@@ -1136,6 +1435,21 @@ fn render_html(report: &ResearchReport) -> String {
           <div class="sub">Detailed rows</div>
           <div id="regime-table"></div>
         </div>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
+        <h2 style="margin-right:auto;">Regime-Conditional Decay</h2>
+        <label class="pill">Market
+          <select id="regime-decay-market"></select>
+        </label>
+        <label class="pill">Regime
+          <select id="regime-decay-bucket"></select>
+        </label>
+      </div>
+      <div class="card">
+        <div class="sub">IC and long/short spread for each factor conditioned on market regime.</div>
+        <div id="regime-decay-table"></div>
       </div>
     </section>
     <section>
@@ -1286,6 +1600,35 @@ fn render_html(report: &ResearchReport) -> String {
         : '<div class="sub">No decay curve data</div>';
     }}
 
+    function renderQuintiles(scope, horizon) {{
+      const rows = report.factor_quintile_rows
+        .filter(r => r.scope === scope && Number(r.horizon_days) === Number(horizon));
+      const chart = document.getElementById('quintile-chart');
+      const series = rows.map(row => ({{
+        name: row.factor,
+        values: [row.q1_avg_return, row.q2_avg_return, row.q3_avg_return, row.q4_avg_return, row.q5_avg_return]
+          .map((y, idx) => ({{ x: idx + 1, y }})),
+      }}));
+      chart.innerHTML = series.length
+        ? lineChartSvg(series, 560, 250) + `<div class="sub" style="margin-top:10px;">Scope: ${{esc(scope)}} | Horizon: ${{horizon}}d</div>`
+        : '<div class="sub">No quantile data</div>';
+
+      document.getElementById('quintile-table').innerHTML =
+        `<table><thead><tr><th>Factor</th><th>Obs</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th>Q5</th><th>Monotonicity</th><th>Q5-Q1</th></tr></thead><tbody>${
+          rows.map(row => `<tr>
+            <td>${{esc(row.factor)}}</td>
+            <td>${{row.observations}}</td>
+            <td>${{fmtPct(row.q1_avg_return)}}</td>
+            <td>${{fmtPct(row.q2_avg_return)}}</td>
+            <td>${{fmtPct(row.q3_avg_return)}}</td>
+            <td>${{fmtPct(row.q4_avg_return)}}</td>
+            <td>${{fmtPct(row.q5_avg_return)}}</td>
+            <td>${{fmtNum(row.monotonicity_score)}}</td>
+            <td>${{fmtPct(row.q5_q1_spread)}}</td>
+          </tr>`).join('')
+        }</tbody></table>`;
+    }}
+
     function renderRollingIc(horizon) {{
       const rows = report.rolling_ic_rows
         .filter(r => Number(r.horizon_days) === Number(horizon))
@@ -1342,6 +1685,21 @@ fn render_html(report: &ResearchReport) -> String {
       }</tbody></table>`;
     }}
 
+    function renderRegimeDecay(market, bucket) {{
+      const rows = report.regime_decay_rows
+        .filter(r => r.market === market && r.regime_bucket === bucket);
+      document.getElementById('regime-decay-table').innerHTML =
+        `<table><thead><tr><th>Factor</th><th>Horizon</th><th>Obs</th><th>IC</th><th>Long/Short</th></tr></thead><tbody>${
+          rows.map(row => `<tr>
+            <td>${{esc(row.factor)}}</td>
+            <td>${{row.horizon_days}}d</td>
+            <td>${{row.observations}}</td>
+            <td>${{fmtNum(row.ic)}}</td>
+            <td>${{fmtPct(row.long_short_spread)}}</td>
+          </tr>`).join('')
+        }</tbody></table>`;
+    }}
+
     function renderWalkTable() {{
       const root = document.getElementById('walk-table');
       root.innerHTML = `<table><thead><tr><th>Fold</th><th>Strategy</th><th>Portfolio</th><th>Train Score</th><th>Test PnL</th><th>Sharpe</th><th>Calmar</th><th>Drawdown</th><th>Gap</th></tr></thead><tbody>${
@@ -1377,11 +1735,36 @@ fn render_html(report: &ResearchReport) -> String {
       horizonSel.addEventListener('change', () => renderRollingIc(horizonSel.value));
       renderRollingIc(horizons[0] || 1);
 
+      const quintileScopeSel = document.getElementById('quintile-scope');
+      const quintileScopes = [...new Set(report.factor_quintile_rows.map(r => r.scope))];
+      quintileScopeSel.innerHTML = quintileScopes.map(scope => `<option value="${{esc(scope)}}">${{esc(scope)}}</option>`).join('');
+      const quintileHorizonSel = document.getElementById('quintile-horizon');
+      const quintileHorizons = [...new Set(report.factor_quintile_rows.map(r => r.horizon_days))].sort((a, b) => a - b);
+      quintileHorizonSel.innerHTML = quintileHorizons.map(h => `<option value="${{h}}">${{h}}d</option>`).join('');
+      quintileScopeSel.addEventListener('change', () => renderQuintiles(quintileScopeSel.value, quintileHorizonSel.value));
+      quintileHorizonSel.addEventListener('change', () => renderQuintiles(quintileScopeSel.value, quintileHorizonSel.value));
+      renderQuintiles(quintileScopes[0] || 'ALL', quintileHorizons[0] || 1);
+
       const marketSel = document.getElementById('regime-market');
       const markets = [...new Set(report.regime_rows.map(r => r.market))];
       marketSel.innerHTML = markets.map(m => `<option value="${{esc(m)}}">${{esc(m)}}</option>`).join('');
       marketSel.addEventListener('change', () => renderRegime(marketSel.value));
       renderRegime(markets[0] || 'ALL');
+
+      const regimeDecayMarketSel = document.getElementById('regime-decay-market');
+      const regimeDecayMarkets = [...new Set(report.regime_decay_rows.map(r => r.market))];
+      regimeDecayMarketSel.innerHTML = regimeDecayMarkets.map(m => `<option value="${{esc(m)}}">${{esc(m)}}</option>`).join('');
+      const regimeDecayBucketSel = document.getElementById('regime-decay-bucket');
+      const firstMarket = regimeDecayMarkets[0] || 'ALL';
+      function syncRegimeBuckets() {{
+        const buckets = [...new Set(report.regime_decay_rows.filter(r => r.market === regimeDecayMarketSel.value).map(r => r.regime_bucket))];
+        regimeDecayBucketSel.innerHTML = buckets.map(b => `<option value="${{esc(b)}}">${{esc(b)}}</option>`).join('');
+        renderRegimeDecay(regimeDecayMarketSel.value, buckets[0] || '');
+      }}
+      regimeDecayMarketSel.addEventListener('change', syncRegimeBuckets);
+      regimeDecayBucketSel.addEventListener('change', () => renderRegimeDecay(regimeDecayMarketSel.value, regimeDecayBucketSel.value));
+      regimeDecayMarketSel.value = firstMarket;
+      syncRegimeBuckets();
     }}
 
     init();
@@ -1417,6 +1800,28 @@ fn mean(values: &[f64]) -> f64 {
     } else {
         values.iter().sum::<f64>() / values.len() as f64
     }
+}
+
+fn factor_signal(snap: &SignalSnapshot, factor: &str) -> f64 {
+    match factor {
+        "momentum" => snap.factor_momentum,
+        "mean_reversion" => snap.factor_mean_reversion,
+        "low_vol" => snap.factor_low_vol,
+        "volume" => snap.factor_volume,
+        _ => snap.composite_alpha,
+    }
+}
+
+fn average_quintile_returns(sorted_pairs: &[(f64, f64)]) -> [f64; 5] {
+    let mut out = [0.0; 5];
+    let len = sorted_pairs.len();
+    for (bucket, slot) in out.iter_mut().enumerate() {
+        let start = bucket * len / 5;
+        let end = ((bucket + 1) * len / 5).max(start + 1).min(len);
+        let slice = &sorted_pairs[start..end];
+        *slot = slice.iter().map(|(_, ret)| *ret).sum::<f64>() / slice.len() as f64;
+    }
+    out
 }
 
 fn terciles(values: &[f64]) -> (f64, f64) {
@@ -1567,8 +1972,17 @@ mod tests {
         let (_report, artifacts) =
             write_research_report(&cfg, &data, &req, "outputs_rust/test_research_report")
                 .expect("research report");
+        let summary_path =
+            std::path::Path::new("outputs_rust/test_research_report/research_report_summary.txt");
+        let quintile_path =
+            std::path::Path::new("outputs_rust/test_research_report/factor_quintiles.csv");
+        let regime_decay_path =
+            std::path::Path::new("outputs_rust/test_research_report/regime_decay.csv");
         assert!(artifacts.json_path.exists());
         assert!(artifacts.markdown_path.exists());
         assert!(artifacts.html_path.exists());
+        assert!(summary_path.exists());
+        assert!(quintile_path.exists());
+        assert!(regime_decay_path.exists());
     }
 }

@@ -83,6 +83,8 @@ pub fn create_run_bundle(req: &BundleRequest) -> Result<BundleReport> {
         "research_report.json",
         "research_report_summary.txt",
         "factor_decay.csv",
+        "factor_quintiles.csv",
+        "regime_decay.csv",
         "rolling_ic.csv",
         "regime_split.csv",
         "walk_forward_deep_dive.csv",

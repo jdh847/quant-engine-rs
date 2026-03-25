@@ -2791,7 +2791,6 @@ refreshFromFiles();
         baseline_run = text.baseline_run,
         candidate_run = text.candidate_run,
         output_dir_label = text.output_dir_label,
-        open_output_dir = text.open_output_dir,
         copy_command_label = text.copy_command_label,
         compare_hint = text.compare_hint,
         recent_compare = text.recent_compare,
