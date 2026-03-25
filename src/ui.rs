@@ -140,6 +140,34 @@ struct RegimeDecayRowUi {
     long_short_spread: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegimeTimelineRowUi {
+    date: String,
+    market: String,
+    regime_bucket: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegimeTransitionRowUi {
+    market: String,
+    from_regime_bucket: String,
+    to_regime_bucket: String,
+    transition_count: usize,
+    avg_gap_days: f64,
+    last_transition_date: String,
+}
+
+type ResearchReportUiParts = (
+    Vec<WalkForwardRowUi>,
+    Vec<RegimeSplitRowUi>,
+    Vec<FactorDecayRowUi>,
+    Vec<RollingIcRowUi>,
+    Vec<FactorQuintileRowUi>,
+    Vec<RegimeDecayRowUi>,
+    Vec<RegimeTimelineRowUi>,
+    Vec<RegimeTransitionRowUi>,
+);
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ResearchReportCompat {
     #[serde(default)]
@@ -154,6 +182,10 @@ struct ResearchReportCompat {
     factor_quintile_rows: Vec<FactorQuintileRowUi>,
     #[serde(default)]
     regime_decay_rows: Vec<RegimeDecayRowUi>,
+    #[serde(default)]
+    regime_timeline_rows: Vec<RegimeTimelineRowUi>,
+    #[serde(default)]
+    regime_transition_rows: Vec<RegimeTransitionRowUi>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,6 +422,7 @@ struct DashboardI18nText {
     compare_tie: String,
     export_csv: String,
     export_markdown: String,
+    research_export_pack: String,
     research: String,
     decay_overview: String,
     rolling_ic: String,
@@ -398,6 +431,7 @@ struct DashboardI18nText {
     regime_aware_leaderboard: String,
     factor_rotation_monitor: String,
     regime_rotation_matrix: String,
+    regime_transition_monitor: String,
     quantile_ladder: String,
     regime_conditional_decay: String,
     folds: String,
@@ -415,6 +449,11 @@ struct DashboardI18nText {
     rotation_focus: String,
     aligned_regimes: String,
     mismatch_regimes: String,
+    latest_transition: String,
+    transition_count: String,
+    avg_gap_days: String,
+    from_regime: String,
+    to_regime: String,
     rotation_switches: String,
     leader_streak: String,
     horizon_days: String,
@@ -541,6 +580,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         compare_tie: t.compare_tie.to_string(),
         export_csv: t.export_csv.to_string(),
         export_markdown: t.export_markdown.to_string(),
+        research_export_pack: t.research_export_pack.to_string(),
         research: t.research.to_string(),
         decay_overview: t.decay_overview.to_string(),
         rolling_ic: t.rolling_ic.to_string(),
@@ -549,6 +589,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         regime_aware_leaderboard: t.regime_aware_leaderboard.to_string(),
         factor_rotation_monitor: t.factor_rotation_monitor.to_string(),
         regime_rotation_matrix: t.regime_rotation_matrix.to_string(),
+        regime_transition_monitor: t.regime_transition_monitor.to_string(),
         quantile_ladder: t.quantile_ladder.to_string(),
         regime_conditional_decay: t.regime_conditional_decay.to_string(),
         folds: t.folds.to_string(),
@@ -566,6 +607,11 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         rotation_focus: t.rotation_focus.to_string(),
         aligned_regimes: t.aligned_regimes.to_string(),
         mismatch_regimes: t.mismatch_regimes.to_string(),
+        latest_transition: t.latest_transition.to_string(),
+        transition_count: t.transition_count.to_string(),
+        avg_gap_days: t.avg_gap_days.to_string(),
+        from_regime: t.from_regime.to_string(),
+        to_regime: t.to_regime.to_string(),
         rotation_switches: t.rotation_switches.to_string(),
         leader_streak: t.leader_streak.to_string(),
         horizon_days: t.horizon_days.to_string(),
@@ -700,6 +746,8 @@ pub fn build_dashboard_with_language(
         research_rolling_rows,
         research_quintile_rows,
         research_regime_decay_rows,
+        research_regime_timeline_rows,
+        research_regime_transition_rows,
     ) = read_research_report(&research_json_path);
     let registry_rows = read_registry_rows(&registry_path)?;
     let strategy_compare_rows = build_strategy_compare_rows(&registry_rows);
@@ -721,6 +769,8 @@ pub fn build_dashboard_with_language(
     let research_walk_forward_json = serde_json::to_string(&research_walk_forward_rows)?;
     let research_quintile_json = serde_json::to_string(&research_quintile_rows)?;
     let research_regime_decay_json = serde_json::to_string(&research_regime_decay_rows)?;
+    let research_regime_timeline_json = serde_json::to_string(&research_regime_timeline_rows)?;
+    let research_regime_transition_json = serde_json::to_string(&research_regime_transition_rows)?;
     let data_quality_json = serde_json::to_string(&data_quality_rows)?;
     let audit_markets_json = serde_json::to_string(&audit_markets)?;
     let audit_config_sha_json = serde_json::to_string(&audit_config_sha)?;
@@ -1030,6 +1080,8 @@ th {{ color: var(--muted); font-weight: 600; }}
       <div class="toolbar">
         <h3 id="research-title" style="margin:0;">{research}</h3>
         <span class="chip" id="research-stats"></span>
+        <button id="research-export-csv-btn" class="action-btn" type="button">{export_csv}</button>
+        <button id="research-export-md-btn" class="action-btn" type="button">{export_markdown}</button>
       </div>
       <div class="mini-grid" id="research-kpis"></div>
       <div style="margin-top: 12px;">
@@ -1302,6 +1354,35 @@ th {{ color: var(--muted); font-weight: 600; }}
           </div>
         </div>
       </div>
+      <div style="margin-top: 12px;">
+        <div class="mini-toolbar">
+          <span class="subtle-title" id="regime-transition-title" style="margin:0;">{regime_transition_monitor}</span>
+          <label class="pill"><span id="regime-transition-market-label">{market}</span>
+            <select id="research-regime-transition-market" class="select"></select>
+          </label>
+        </div>
+        <div class="mini-grid" id="regime-transition-kpis"></div>
+        <div class="grid" style="margin-top:10px;">
+          <div class="chart-shell">
+            <div id="regime-transition-cards" class="regime-grid"></div>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th id="regime-transition-th-market">{market}</th>
+                  <th id="regime-transition-th-from">{from_regime}</th>
+                  <th id="regime-transition-th-to">{to_regime}</th>
+                  <th id="regime-transition-th-count">{transition_count}</th>
+                  <th id="regime-transition-th-gap">{avg_gap_days}</th>
+                  <th id="regime-transition-th-latest">{latest_transition}</th>
+                </tr>
+              </thead>
+              <tbody id="regime-transition-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="panel" data-delay="5" style="margin-top: 16px;">
@@ -1488,6 +1569,8 @@ let researchDecayRows = {research_decay_json};
 let researchRollingRows = {research_rolling_json};
 let researchQuintileRows = {research_quintile_json};
 let researchRegimeDecayRows = {research_regime_decay_json};
+let researchRegimeTimelineRows = {research_regime_timeline_json};
+let researchRegimeTransitionRows = {research_regime_transition_json};
 let dataQualityRows = {data_quality_json};
 let auditMarkets = {audit_markets_json};
 let auditConfigSha = {audit_config_sha_json};
@@ -1937,6 +2020,10 @@ function downloadTextFile(filename, mime, content) {{
   a.click();
   a.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}}
+
+function csvEscape(value) {{
+  return `"${{String(value == null ? '' : value).replaceAll('"', '""')}}"`;
 }}
 
 function runOptionLabel(row) {{
@@ -2887,6 +2974,135 @@ function buildRegimeRotationRows() {{
   }}).sort((a, b) => Number(b.aligned) - Number(a.aligned) || Number(b.ic || 0) - Number(a.ic || 0));
 }}
 
+function buildRegimeTransitionEvents() {{
+  const grouped = new Map();
+  (researchRegimeTimelineRows || []).forEach((row) => {{
+    const key = String(row.market || '');
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  }});
+  const events = [];
+  grouped.forEach((rows, market) => {{
+    rows.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    for (let i = 1; i < rows.length; i += 1) {{
+      const prev = rows[i - 1];
+      const next = rows[i];
+      if (String(prev.regime_bucket || '') === String(next.regime_bucket || '')) continue;
+      events.push({{
+        market,
+        date: String(next.date || '-'),
+        from_regime_bucket: String(prev.regime_bucket || '-'),
+        to_regime_bucket: String(next.regime_bucket || '-'),
+      }});
+    }}
+  }});
+  return events.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(a.market || '').localeCompare(String(b.market || '')));
+}}
+
+function renderRegimeTransitionMonitor(text) {{
+  const marketSel = document.getElementById('research-regime-transition-market');
+  const prevMarket = marketSel.value || 'ALL';
+  const allRows = (researchRegimeTransitionRows || []).slice();
+  const markets = [...new Set(allRows.map((row) => row.market).filter(Boolean))].sort();
+  marketSel.innerHTML = ['ALL', ...markets].map((m) => `<option value="${{esc(m)}}">${{esc(m === 'ALL' ? text.all : m)}}</option>`).join('');
+  marketSel.value = ['ALL', ...markets].includes(prevMarket) ? prevMarket : 'ALL';
+  const rows = allRows
+    .filter((row) => marketSel.value === 'ALL' || row.market === marketSel.value)
+    .sort((a, b) => Number(b.transition_count || 0) - Number(a.transition_count || 0) || String(b.last_transition_date || '').localeCompare(String(a.last_transition_date || '')));
+  const events = buildRegimeTransitionEvents()
+    .filter((row) => marketSel.value === 'ALL' || row.market === marketSel.value);
+  const kpis = document.getElementById('regime-transition-kpis');
+  const cards = document.getElementById('regime-transition-cards');
+  const body = document.getElementById('regime-transition-rows');
+  if (rows.length === 0 && events.length === 0) {{
+    kpis.innerHTML = `<div class="mini-kpi"><div class="k">${{text.regime_transition_monitor}}</div><div class="v">-</div></div>`;
+    cards.innerHTML = `<div class="sub">regime_timeline.csv + regime_transitions.csv / research_report.json</div>`;
+    body.innerHTML = `<tr><td colspan="6" class="sub">regime_timeline.csv + regime_transitions.csv / research_report.json</td></tr>`;
+    return;
+  }}
+  const latest = events[0] || null;
+  const topTransition = rows[0] || null;
+  const totalCount = rows.reduce((acc, row) => acc + Number(row.transition_count || 0), 0);
+  const avgGap = rows.reduce((acc, row) => acc + Number(row.avg_gap_days || 0), 0) / Math.max(rows.length, 1);
+  const stats = [
+    {{ k: text.latest_transition, v: latest ? `${{latest.date}} | ${{latest.market}} | ${{latest.from_regime_bucket}} -> ${{latest.to_regime_bucket}}` : '-' }},
+    {{ k: text.transition_count, v: String(totalCount) }},
+    {{ k: text.avg_gap_days, v: Number(avgGap || 0).toFixed(1) }},
+    {{ k: text.rotation_focus, v: topTransition ? `${{topTransition.market}} | ${{topTransition.from_regime_bucket}} -> ${{topTransition.to_regime_bucket}}` : '-' }},
+  ];
+  kpis.innerHTML = stats.map((it) => `<div class="mini-kpi"><div class="k">${{it.k}}</div><div class="v">${{esc(it.v)}}</div></div>`).join('');
+  cards.innerHTML = events.slice(0, 8).map((row) => `<div class="regime-card">
+    <div class="regime-title">${{esc(row.market)}} / ${{esc(row.date)}}</div>
+    <div class="regime-main">${{esc(row.from_regime_bucket)}} -> ${{esc(row.to_regime_bucket)}}</div>
+    <div class="regime-sub">${{text.latest_transition}} | ${{text.market}}=${{esc(row.market)}}</div>
+  </div>`).join('');
+  body.innerHTML = rows.map((row) => `<tr>
+    <td>${{esc(row.market)}}</td>
+    <td>${{esc(row.from_regime_bucket)}}</td>
+    <td>${{esc(row.to_regime_bucket)}}</td>
+    <td>${{row.transition_count}}</td>
+    <td>${{Number(row.avg_gap_days || 0).toFixed(1)}}</td>
+    <td>${{esc(row.last_transition_date)}}</td>
+  </tr>`).join('');
+}}
+
+function renderResearchExports(text) {{
+  const exportCsvBtn = document.getElementById('research-export-csv-btn');
+  const exportMdBtn = document.getElementById('research-export-md-btn');
+  const regimeMarket = document.getElementById('research-regime-leaderboard-market').value || 'ALL';
+  const rotationHorizon = document.getElementById('research-rotation-horizon').value || '-';
+  const transitionMarket = document.getElementById('research-regime-transition-market').value || 'ALL';
+  const winnerRows = buildRegimeLeaderRows('ic')
+    .filter((row) => regimeMarket === 'ALL' || row.market === regimeMarket);
+  const rotationRows = buildRegimeRotationRows();
+  const transitionRows = (researchRegimeTransitionRows || [])
+    .filter((row) => transitionMarket === 'ALL' || row.market === transitionMarket);
+  const exportBaseName = `research_snapshot_${{String(regimeMarket).toLowerCase()}}_${{String(transitionMarket).toLowerCase()}}_${{String(rotationHorizon).toLowerCase()}}d`;
+  exportCsvBtn.disabled = false;
+  exportMdBtn.disabled = false;
+  exportCsvBtn.onclick = () => {{
+    const lines = [
+      ['section','market','bucket','factor','horizon_days','metric_a','metric_b','metric_c','date'],
+      ...winnerRows.map((row) => ['regime_leader', row.market, row.regime_bucket, row.factor, row.horizon_days, Number(row.ic || 0).toFixed(6), Number(row.long_short_spread || 0).toFixed(6), row.observations, '']),
+      ...rotationRows.map((row) => ['regime_rotation', row.market, row.regime_bucket, row.factor, row.horizon_days, row.rotation_factor, row.rotation_switches, row.aligned ? 'aligned' : 'risk', '']),
+      ...transitionRows.map((row) => ['regime_transition', row.market, row.from_regime_bucket, row.to_regime_bucket, '', row.transition_count, Number(row.avg_gap_days || 0).toFixed(4), '', row.last_transition_date]),
+    ];
+    const csv = lines.map((cols) => cols.map(csvEscape).join(',')).join('\\n');
+    downloadTextFile(`${{exportBaseName}}.csv`, 'text/csv;charset=utf-8', csv);
+  }};
+  exportMdBtn.onclick = () => {{
+    const lines = [
+      `# ${{text.research_export_pack}}`,
+      '',
+      `- regime_leader_market=${{regimeMarket}}`,
+      `- transition_market=${{transitionMarket}}`,
+      `- rotation_horizon=${{rotationHorizon}}d`,
+      `- winner_rows=${{winnerRows.length}}`,
+      `- rotation_rows=${{rotationRows.length}}`,
+      `- transition_rows=${{transitionRows.length}}`,
+      '',
+      '## Regime Leaders',
+      '',
+      '| Market | Regime | Factor | Horizon | IC | Spread | Obs |',
+      '| --- | --- | --- | ---: | ---: | ---: | ---: |',
+      ...winnerRows.map((row) => `| ${{row.market}} | ${{row.regime_bucket}} | ${{row.factor}} | ${{row.horizon_days}} | ${{Number(row.ic || 0).toFixed(4)}} | ${{fmtSignedPct(Number(row.long_short_spread || 0))}} | ${{row.observations}} |`),
+      '',
+      '## Regime x Rotation Matrix',
+      '',
+      '| Market | Regime | Winner | Rotation Focus | Switches | Status |',
+      '| --- | --- | --- | --- | ---: | --- |',
+      ...rotationRows.map((row) => `| ${{row.market}} | ${{row.regime_bucket}} | ${{row.factor}} | ${{row.rotation_factor}} | ${{row.rotation_switches}} | ${{row.aligned ? text.healthy : text.risk}} |`),
+      '',
+      '## Regime Transitions',
+      '',
+      '| Market | From | To | Count | Avg Gap (d) | Latest |',
+      '| --- | --- | --- | ---: | ---: | --- |',
+      ...transitionRows.map((row) => `| ${{row.market}} | ${{row.from_regime_bucket}} | ${{row.to_regime_bucket}} | ${{row.transition_count}} | ${{Number(row.avg_gap_days || 0).toFixed(1)}} | ${{row.last_transition_date}} |`),
+    ];
+    downloadTextFile(`${{exportBaseName}}.md`, 'text/markdown;charset=utf-8', lines.join('\\n'));
+  }};
+}}
+
 function renderRegimeRotationMatrix(text) {{
   const marketSel = document.getElementById('research-regime-rotation-market');
   const prevMarket = marketSel.value || 'ALL';
@@ -3027,12 +3243,15 @@ function renderResearch(text) {{
     (`quintile=${{(researchQuintileRows || []).length}}`),
     (`regime_decay=${{(researchRegimeDecayRows || []).length}}`),
     (`regime_rotation=${{buildRegimeRotationRows().length}}`),
+    (`regime_transition=${{(researchRegimeTransitionRows || []).length}}`),
   ].filter(Boolean);
   document.getElementById('research-stats').textContent = stats.join(' | ');
   renderWalkForwardBoard(text);
   renderRegimeLeaderboard(text);
   renderFactorRotation(text);
   renderRegimeRotationMatrix(text);
+  renderRegimeTransitionMonitor(text);
+  renderResearchExports(text);
   renderResearchCharts(text);
   renderRegime(text);
 }}
@@ -3201,6 +3420,8 @@ function applyLanguage(lang) {{
   document.getElementById('strategy-time-label').textContent = text.time_range;
   document.getElementById('strategy-export-csv-btn').textContent = text.export_csv;
   document.getElementById('strategy-export-md-btn').textContent = text.export_markdown;
+  document.getElementById('research-export-csv-btn').textContent = text.export_csv;
+  document.getElementById('research-export-md-btn').textContent = text.export_markdown;
   document.getElementById('strategy-th-plugin').textContent = text.plugin;
   document.getElementById('strategy-th-method').textContent = text.method;
   document.getElementById('strategy-th-runs').textContent = text.runs_label;
@@ -3264,10 +3485,12 @@ function applyLanguage(lang) {{
   document.getElementById('regime-leaderboard-title').textContent = text.regime_aware_leaderboard;
   document.getElementById('rotation-title').textContent = text.factor_rotation_monitor;
   document.getElementById('regime-rotation-title').textContent = text.regime_rotation_matrix;
+  document.getElementById('regime-transition-title').textContent = text.regime_transition_monitor;
   document.getElementById('regime-leaderboard-market-label').textContent = text.market;
   document.getElementById('regime-leaderboard-metric-label').textContent = text.metric;
   document.getElementById('rotation-horizon-label').textContent = text.horizon_days;
   document.getElementById('regime-rotation-market-label').textContent = text.market;
+  document.getElementById('regime-transition-market-label').textContent = text.market;
   document.getElementById('walk-forward-fold').textContent = text.folds;
   document.getElementById('walk-forward-plugin').textContent = text.plugin;
   document.getElementById('walk-forward-method').textContent = text.method;
@@ -3292,6 +3515,12 @@ function applyLanguage(lang) {{
   document.getElementById('regime-rotation-th-rotation').textContent = text.rotation_focus;
   document.getElementById('regime-rotation-th-switches').textContent = text.rotation_switches;
   document.getElementById('regime-rotation-th-status').textContent = text.status;
+  document.getElementById('regime-transition-th-market').textContent = text.market;
+  document.getElementById('regime-transition-th-from').textContent = text.from_regime;
+  document.getElementById('regime-transition-th-to').textContent = text.to_regime;
+  document.getElementById('regime-transition-th-count').textContent = text.transition_count;
+  document.getElementById('regime-transition-th-gap').textContent = text.avg_gap_days;
+  document.getElementById('regime-transition-th-latest').textContent = text.latest_transition;
   document.getElementById('decay-chart-title').textContent = text.decay_overview;
   document.getElementById('decay-title').textContent = text.decay_overview;
   document.getElementById('rolling-chart-title').textContent = text.rolling_ic;
@@ -3481,6 +3710,8 @@ async function refreshFromFiles() {{
         researchRollingRows = obj.rolling_ic_rows || [];
         researchQuintileRows = obj.factor_quintile_rows || [];
         researchRegimeDecayRows = obj.regime_decay_rows || [];
+        researchRegimeTimelineRows = obj.regime_timeline_rows || [];
+        researchRegimeTransitionRows = obj.regime_transition_rows || [];
       }} catch (e) {{}}
     }}
     if (dqResp || dq2Resp) {{
@@ -3614,6 +3845,7 @@ document.getElementById('research-regime-leaderboard-market').addEventListener('
 document.getElementById('research-regime-leaderboard-metric').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('research-rotation-horizon').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('research-regime-rotation-market').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
+document.getElementById('research-regime-transition-market').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('strategy-market-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-plugin-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-command-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
@@ -3705,6 +3937,7 @@ refreshFromFiles();
         regime_aware_leaderboard = text.regime_aware_leaderboard,
         factor_rotation_monitor = text.factor_rotation_monitor,
         regime_rotation_matrix = text.regime_rotation_matrix,
+        regime_transition_monitor = text.regime_transition_monitor,
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
         regime_split = text.regime_split,
@@ -3720,6 +3953,11 @@ refreshFromFiles();
         composite_alpha = text.composite_alpha,
         regime_bucket = text.regime_bucket,
         rotation_focus = text.rotation_focus,
+        latest_transition = text.latest_transition,
+        transition_count = text.transition_count,
+        avg_gap_days = text.avg_gap_days,
+        from_regime = text.from_regime,
+        to_regime = text.to_regime,
         rotation_switches = text.rotation_switches,
         monotonicity = text.monotonicity,
         summary_html = summary_html,
@@ -3740,6 +3978,8 @@ refreshFromFiles();
         research_rolling_json = research_rolling_json,
         research_quintile_json = research_quintile_json,
         research_regime_decay_json = research_regime_decay_json,
+        research_regime_timeline_json = research_regime_timeline_json,
+        research_regime_transition_json = research_regime_transition_json,
         data_quality_json = data_quality_json,
         audit_markets_json = audit_markets_json,
         audit_config_sha_json = audit_config_sha_json,
@@ -4666,18 +4906,11 @@ fn read_audit_snapshot(path: &Path) -> (String, Vec<AuditMarketUi>) {
     (snap.config_sha256, out)
 }
 
-fn read_research_report(
-    path: &Path,
-) -> (
-    Vec<WalkForwardRowUi>,
-    Vec<RegimeSplitRowUi>,
-    Vec<FactorDecayRowUi>,
-    Vec<RollingIcRowUi>,
-    Vec<FactorQuintileRowUi>,
-    Vec<RegimeDecayRowUi>,
-) {
+fn read_research_report(path: &Path) -> ResearchReportUiParts {
     let Ok(s) = fs::read_to_string(path) else {
         return (
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -4694,6 +4927,8 @@ fn read_research_report(
         report.rolling_ic_rows,
         report.factor_quintile_rows,
         report.regime_decay_rows,
+        report.regime_timeline_rows,
+        report.regime_transition_rows,
     )
 }
 
@@ -4817,7 +5052,7 @@ mod tests {
         .expect("write equity");
         fs::write(
             output_dir.join("research_report_summary.txt"),
-            "folds=3\navg_test_sharpe=1.2345\nbest_decay_factor=momentum\nbest_decay_horizon_days=5\nbest_decay_ic=0.2222\nlatest_rolling_factor=volume\nlatest_rolling_horizon_days=3\nlatest_rolling_ic=0.1111\nbest_monotonic_factor=momentum\nbest_monotonic_horizon_days=5\nbest_monotonicity_score=0.9500\nbest_regime_decay_market=US\nbest_regime_decay_bucket=trend_up_low_vol\nbest_regime_decay_factor=composite\nbest_regime_decay_horizon_days=5\nbest_regime_decay_ic=0.1800\ndominant_winner_strategy_plugin=my_alpha\ndominant_winner_portfolio_method=hrp\ndominant_winner_count=2\ndominant_winner_concentration=66.67%\nunstable_folds=1\ntop_regime_leader_market=US\ntop_regime_leader_bucket=trend_up_low_vol\ntop_regime_leader_factor=composite\ntop_regime_leader_horizon_days=5\ntop_regime_leader_ic=0.1800\ndominant_regime_factor=composite\ndominant_regime_factor_count=2\navg_regime_leader_ic=0.1450\npositive_regime_leader_count=2\nrotation_default_horizon_days=3\ncurrent_rotation_date=2026-01-04\ncurrent_rotation_leader_factor=volume\ncurrent_rotation_leader_ic=0.1300\ndominant_rotation_factor=momentum\ndominant_rotation_factor_count=2\nrotation_switches=1\nlatest_rotation_streak_factor=volume\nlatest_rotation_streak_count=1\nregime_rotation_focus_market=JP\nregime_rotation_focus_bucket=trend_down_high_vol\nregime_rotation_focus_factor=composite\nregime_rotation_focus_horizon_days=3\naligned_regime_count=1\nmismatched_regime_count=1\nregime_rotation_alignment_ratio=50.00%\n",
+            "folds=3\navg_test_sharpe=1.2345\nbest_decay_factor=momentum\nbest_decay_horizon_days=5\nbest_decay_ic=0.2222\nlatest_rolling_factor=volume\nlatest_rolling_horizon_days=3\nlatest_rolling_ic=0.1111\nbest_monotonic_factor=momentum\nbest_monotonic_horizon_days=5\nbest_monotonicity_score=0.9500\nbest_regime_decay_market=US\nbest_regime_decay_bucket=trend_up_low_vol\nbest_regime_decay_factor=composite\nbest_regime_decay_horizon_days=5\nbest_regime_decay_ic=0.1800\ndominant_winner_strategy_plugin=my_alpha\ndominant_winner_portfolio_method=hrp\ndominant_winner_count=2\ndominant_winner_concentration=66.67%\nunstable_folds=1\ntop_regime_leader_market=US\ntop_regime_leader_bucket=trend_up_low_vol\ntop_regime_leader_factor=composite\ntop_regime_leader_horizon_days=5\ntop_regime_leader_ic=0.1800\ndominant_regime_factor=composite\ndominant_regime_factor_count=2\navg_regime_leader_ic=0.1450\npositive_regime_leader_count=2\nrotation_default_horizon_days=3\ncurrent_rotation_date=2026-01-04\ncurrent_rotation_leader_factor=volume\ncurrent_rotation_leader_ic=0.1300\ndominant_rotation_factor=momentum\ndominant_rotation_factor_count=2\nrotation_switches=1\nlatest_rotation_streak_factor=volume\nlatest_rotation_streak_count=1\nregime_rotation_focus_market=JP\nregime_rotation_focus_bucket=trend_down_high_vol\nregime_rotation_focus_factor=composite\nregime_rotation_focus_horizon_days=3\naligned_regime_count=1\nmismatched_regime_count=1\nregime_rotation_alignment_ratio=50.00%\ntop_regime_transition_market=JP\ntop_regime_transition_from_bucket=trend_down_low_vol\ntop_regime_transition_to_bucket=trend_down_high_vol\ntop_regime_transition_count=2\nlatest_regime_transition_market=JP\nlatest_regime_transition_date=2026-01-04\nlatest_regime_transition_from_bucket=trend_down_low_vol\nlatest_regime_transition_to_bucket=trend_down_high_vol\navg_regime_transition_gap_days=1.50\n",
         )
         .expect("write research summary");
         fs::write(
@@ -4850,6 +5085,21 @@ mod tests {
     {"market":"US","regime_bucket":"trend_up_low_vol","factor":"momentum","horizon_days":3,"observations":8,"ic":0.12,"long_short_spread":0.02},
     {"market":"JP","regime_bucket":"trend_down_high_vol","factor":"composite","horizon_days":3,"observations":6,"ic":0.11,"long_short_spread":0.01},
     {"market":"JP","regime_bucket":"trend_down_high_vol","factor":"low_vol","horizon_days":5,"observations":6,"ic":0.07,"long_short_spread":0.015}
+  ],
+  "regime_timeline_rows":[
+    {"date":"2026-01-01","market":"US","regime_bucket":"trend_up_low_vol"},
+    {"date":"2026-01-02","market":"US","regime_bucket":"trend_up_low_vol"},
+    {"date":"2026-01-03","market":"US","regime_bucket":"trend_up_high_vol"},
+    {"date":"2026-01-04","market":"US","regime_bucket":"trend_up_high_vol"},
+    {"date":"2026-01-01","market":"JP","regime_bucket":"trend_down_low_vol"},
+    {"date":"2026-01-02","market":"JP","regime_bucket":"trend_down_high_vol"},
+    {"date":"2026-01-03","market":"JP","regime_bucket":"trend_down_low_vol"},
+    {"date":"2026-01-04","market":"JP","regime_bucket":"trend_down_high_vol"}
+  ],
+  "regime_transition_rows":[
+    {"market":"US","from_regime_bucket":"trend_up_low_vol","to_regime_bucket":"trend_up_high_vol","transition_count":1,"avg_gap_days":0.0,"last_transition_date":"2026-01-03"},
+    {"market":"JP","from_regime_bucket":"trend_down_low_vol","to_regime_bucket":"trend_down_high_vol","transition_count":2,"avg_gap_days":1.5,"last_transition_date":"2026-01-04"},
+    {"market":"JP","from_regime_bucket":"trend_down_high_vol","to_regime_bucket":"trend_down_low_vol","transition_count":1,"avg_gap_days":0.0,"last_transition_date":"2026-01-03"}
   ]
 }"#,
         )
@@ -4907,6 +5157,7 @@ mod tests {
         assert!(html.contains("Regime-Aware Leaderboard"));
         assert!(html.contains("Factor Rotation Monitor"));
         assert!(html.contains("Regime x Rotation Matrix"));
+        assert!(html.contains("Regime Transition Monitor"));
         assert!(html.contains("Strategy Comparison"));
         assert!(html.contains("Public Leaderboard"));
         assert!(html.contains("strategy-detail-rows"));
@@ -4915,6 +5166,8 @@ mod tests {
         assert!(html.contains("strategy-command-select"));
         assert!(html.contains("strategy-export-csv-btn"));
         assert!(html.contains("strategy-export-md-btn"));
+        assert!(html.contains("research-export-csv-btn"));
+        assert!(html.contains("research-export-md-btn"));
         assert!(html.contains("compare-baseline-select"));
         assert!(html.contains("compare-candidate-select"));
         assert!(html.contains("compare-copy-btn"));
@@ -4955,10 +5208,15 @@ mod tests {
         assert!(html.contains("regime-rotation-rows"));
         assert!(html.contains("regime-rotation-kpis"));
         assert!(html.contains("research-regime-rotation-market"));
+        assert!(html.contains("regime-transition-rows"));
+        assert!(html.contains("regime-transition-kpis"));
+        assert!(html.contains("research-regime-transition-market"));
         assert!(html.contains("top_regime_leader_market"));
         assert!(html.contains("current_rotation_leader_factor"));
         assert!(html.contains("regime_rotation_focus_market"));
         assert!(html.contains("aligned_regime_count"));
+        assert!(html.contains("top_regime_transition_market"));
+        assert!(html.contains("latest_regime_transition_date"));
         assert!(html.contains("trend_down_high_vol"));
         assert!(html.contains("best_monotonic_factor"));
         assert!(html.contains("dominant_winner_strategy_plugin"));

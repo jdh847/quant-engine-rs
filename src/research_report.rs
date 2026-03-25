@@ -104,6 +104,23 @@ pub struct RegimeDecayRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RegimeTimelineRow {
+    pub date: String,
+    pub market: String,
+    pub regime_bucket: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RegimeTransitionRow {
+    pub market: String,
+    pub from_regime_bucket: String,
+    pub to_regime_bucket: String,
+    pub transition_count: usize,
+    pub avg_gap_days: f64,
+    pub last_transition_date: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RollingIcRow {
     pub date: String,
     pub factor: String,
@@ -120,6 +137,8 @@ pub struct ResearchReport {
     pub factor_decay_rows: Vec<FactorDecayRow>,
     pub factor_quintile_rows: Vec<FactorQuintileRow>,
     pub regime_decay_rows: Vec<RegimeDecayRow>,
+    pub regime_timeline_rows: Vec<RegimeTimelineRow>,
+    pub regime_transition_rows: Vec<RegimeTransitionRow>,
     pub rolling_ic_rows: Vec<RollingIcRow>,
 }
 
@@ -176,6 +195,8 @@ struct MarketRegimePoint {
     trend_bucket: String,
 }
 
+type RegimeDecayGrouped = HashMap<(String, String, String, usize), Vec<(f64, f64)>>;
+
 pub fn write_research_report(
     cfg: &BotConfig,
     data: &CsvDataPortal,
@@ -199,6 +220,8 @@ pub fn write_research_report(
         build_factor_quintile_report(data, &snapshots, &req.factor_decay_horizons);
     let regime_decay_rows =
         build_regime_decay_report(data, &snapshots, &regime_points, &req.factor_decay_horizons);
+    let regime_timeline_rows = build_regime_timeline_rows(&regime_points);
+    let regime_transition_rows = build_regime_transition_rows(&regime_timeline_rows);
     let rolling_ic_rows = build_rolling_ic_report(data, &snapshots, &req.factor_decay_horizons);
 
     write_walk_forward_deep_dive_csv(dir.join("walk_forward_deep_dive.csv"), &walk_forward_rows)?;
@@ -206,6 +229,8 @@ pub fn write_research_report(
     write_factor_decay_csv(dir.join("factor_decay.csv"), &factor_decay_rows)?;
     write_factor_quintile_csv(dir.join("factor_quintiles.csv"), &factor_quintile_rows)?;
     write_regime_decay_csv(dir.join("regime_decay.csv"), &regime_decay_rows)?;
+    write_regime_timeline_csv(dir.join("regime_timeline.csv"), &regime_timeline_rows)?;
+    write_regime_transition_csv(dir.join("regime_transitions.csv"), &regime_transition_rows)?;
     write_rolling_ic_csv(dir.join("rolling_ic.csv"), &rolling_ic_rows)?;
 
     let report = ResearchReport {
@@ -215,6 +240,8 @@ pub fn write_research_report(
         factor_decay_rows,
         factor_quintile_rows,
         regime_decay_rows,
+        regime_timeline_rows,
+        regime_transition_rows,
         rolling_ic_rows,
     };
     let artifacts = write_summary_artifacts(dir, &report)?;
@@ -632,7 +659,7 @@ fn build_regime_decay_report(
         );
     }
 
-    let mut grouped: HashMap<(String, String, String, usize), Vec<(f64, f64)>> = HashMap::new();
+    let mut grouped: RegimeDecayGrouped = HashMap::new();
     for snap in snapshots {
         let Some(regime_bucket) = regime_lookup
             .get(&(snap.market.clone(), snap.date))
@@ -707,6 +734,83 @@ fn build_regime_decay_report(
             .then_with(|| a.horizon_days.cmp(&b.horizon_days))
     });
     rows
+}
+
+fn build_regime_timeline_rows(regime_points: &[MarketRegimePoint]) -> Vec<RegimeTimelineRow> {
+    regime_points
+        .iter()
+        .map(|point| RegimeTimelineRow {
+            date: point.date.to_string(),
+            market: point.market.clone(),
+            regime_bucket: format!("{}_{}", point.trend_bucket, point.vol_bucket),
+        })
+        .collect()
+}
+
+fn build_regime_transition_rows(timeline_rows: &[RegimeTimelineRow]) -> Vec<RegimeTransitionRow> {
+    #[derive(Default)]
+    struct TransitionAgg {
+        count: usize,
+        total_gap_days: i64,
+        last_transition_date: String,
+    }
+
+    let mut grouped: BTreeMap<String, Vec<&RegimeTimelineRow>> = BTreeMap::new();
+    for row in timeline_rows {
+        grouped.entry(row.market.clone()).or_default().push(row);
+    }
+
+    let mut aggs: BTreeMap<(String, String, String), TransitionAgg> = BTreeMap::new();
+    for (market, mut rows) in grouped {
+        rows.sort_by(|a, b| a.date.cmp(&b.date));
+        let mut last_transition_date: Option<NaiveDate> = None;
+        for pair in rows.windows(2) {
+            let prev = pair[0];
+            let next = pair[1];
+            if prev.regime_bucket == next.regime_bucket {
+                continue;
+            }
+            let next_date = NaiveDate::parse_from_str(&next.date, "%Y-%m-%d").ok();
+            let gap = match (last_transition_date, next_date) {
+                (Some(prev_date), Some(cur_date)) => (cur_date - prev_date).num_days(),
+                _ => 0,
+            };
+            let agg = aggs
+                .entry((
+                    market.clone(),
+                    prev.regime_bucket.clone(),
+                    next.regime_bucket.clone(),
+                ))
+                .or_default();
+            agg.count += 1;
+            agg.total_gap_days += gap;
+            agg.last_transition_date = next.date.clone();
+            if let Some(date) = next_date {
+                last_transition_date = Some(date);
+            }
+        }
+    }
+
+    aggs.into_iter()
+        .map(
+            |((market, from_regime_bucket, to_regime_bucket), agg)| RegimeTransitionRow {
+                market,
+                from_regime_bucket,
+                to_regime_bucket,
+                transition_count: agg.count,
+                avg_gap_days: if agg.count == 0 {
+                    0.0
+                } else {
+                    agg.total_gap_days as f64 / agg.count as f64
+                },
+                last_transition_date: if agg.last_transition_date.is_empty() {
+                    "-".to_string()
+                } else {
+                    agg.last_transition_date
+                },
+            },
+        )
+        .collect()
 }
 
 fn compute_market_regimes(
@@ -1126,6 +1230,44 @@ fn write_regime_decay_csv(path: PathBuf, rows: &[RegimeDecayRow]) -> Result<()> 
     Ok(())
 }
 
+fn write_regime_timeline_csv(path: PathBuf, rows: &[RegimeTimelineRow]) -> Result<()> {
+    let mut wtr = csv::Writer::from_path(path)?;
+    wtr.write_record(["date", "market", "regime_bucket"])?;
+    for row in rows {
+        wtr.write_record([
+            row.date.clone(),
+            row.market.clone(),
+            row.regime_bucket.clone(),
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
+fn write_regime_transition_csv(path: PathBuf, rows: &[RegimeTransitionRow]) -> Result<()> {
+    let mut wtr = csv::Writer::from_path(path)?;
+    wtr.write_record([
+        "market",
+        "from_regime_bucket",
+        "to_regime_bucket",
+        "transition_count",
+        "avg_gap_days",
+        "last_transition_date",
+    ])?;
+    for row in rows {
+        wtr.write_record([
+            row.market.clone(),
+            row.from_regime_bucket.clone(),
+            row.to_regime_bucket.clone(),
+            row.transition_count.to_string(),
+            format!("{:.4}", row.avg_gap_days),
+            row.last_transition_date.clone(),
+        ])?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
 fn write_rolling_ic_csv(path: PathBuf, rows: &[RollingIcRow]) -> Result<()> {
     let mut wtr = csv::Writer::from_path(path)?;
     wtr.write_record(["date", "factor", "horizon_days", "observations", "ic"])?;
@@ -1419,9 +1561,31 @@ fn render_summary(report: &ResearchReport) -> String {
                 .iter()
                 .max_by(|a, b| a.0.ic.total_cmp(&b.0.ic))
         });
+    let top_transition = report.regime_transition_rows.iter().max_by(|a, b| {
+        a.transition_count
+            .cmp(&b.transition_count)
+            .then_with(|| a.market.cmp(&b.market))
+            .then_with(|| a.from_regime_bucket.cmp(&b.from_regime_bucket))
+            .then_with(|| a.to_regime_bucket.cmp(&b.to_regime_bucket))
+    });
+    let latest_transition = report.regime_transition_rows.iter().max_by(|a, b| {
+        a.last_transition_date
+            .cmp(&b.last_transition_date)
+            .then_with(|| a.market.cmp(&b.market))
+    });
+    let avg_transition_gap_days = if report.regime_transition_rows.is_empty() {
+        0.0
+    } else {
+        report
+            .regime_transition_rows
+            .iter()
+            .map(|row| row.avg_gap_days)
+            .sum::<f64>()
+            / report.regime_transition_rows.len() as f64
+    };
     let latest_rolling = report.rolling_ic_rows.last();
     format!(
-        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\ntop_regime_leader_market={}\ntop_regime_leader_bucket={}\ntop_regime_leader_factor={}\ntop_regime_leader_horizon_days={}\ntop_regime_leader_ic={:.4}\ndominant_regime_factor={}\ndominant_regime_factor_count={}\navg_regime_leader_ic={:.4}\npositive_regime_leader_count={}\nrotation_default_horizon_days={}\ncurrent_rotation_date={}\ncurrent_rotation_leader_factor={}\ncurrent_rotation_leader_ic={:.4}\ndominant_rotation_factor={}\ndominant_rotation_factor_count={}\nrotation_switches={}\nlatest_rotation_streak_factor={}\nlatest_rotation_streak_count={}\nregime_rotation_focus_market={}\nregime_rotation_focus_bucket={}\nregime_rotation_focus_factor={}\nregime_rotation_focus_horizon_days={}\naligned_regime_count={}\nmismatched_regime_count={}\nregime_rotation_alignment_ratio={:.2}%\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
+        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\ntop_regime_leader_market={}\ntop_regime_leader_bucket={}\ntop_regime_leader_factor={}\ntop_regime_leader_horizon_days={}\ntop_regime_leader_ic={:.4}\ndominant_regime_factor={}\ndominant_regime_factor_count={}\navg_regime_leader_ic={:.4}\npositive_regime_leader_count={}\nrotation_default_horizon_days={}\ncurrent_rotation_date={}\ncurrent_rotation_leader_factor={}\ncurrent_rotation_leader_ic={:.4}\ndominant_rotation_factor={}\ndominant_rotation_factor_count={}\nrotation_switches={}\nlatest_rotation_streak_factor={}\nlatest_rotation_streak_count={}\nregime_rotation_focus_market={}\nregime_rotation_focus_bucket={}\nregime_rotation_focus_factor={}\nregime_rotation_focus_horizon_days={}\naligned_regime_count={}\nmismatched_regime_count={}\nregime_rotation_alignment_ratio={:.2}%\ntop_regime_transition_market={}\ntop_regime_transition_from_bucket={}\ntop_regime_transition_to_bucket={}\ntop_regime_transition_count={}\nlatest_regime_transition_market={}\nlatest_regime_transition_date={}\nlatest_regime_transition_from_bucket={}\nlatest_regime_transition_to_bucket={}\navg_regime_transition_gap_days={:.2}\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nregime_timeline_rows={}\nregime_transition_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
         report.walk_forward_summary.folds,
         report.walk_forward_summary.avg_test_pnl_ratio * 100.0,
         report.walk_forward_summary.avg_test_sharpe,
@@ -1481,10 +1645,31 @@ fn render_summary(report: &ResearchReport) -> String {
         aligned_regime_count,
         mismatched_regime_count,
         regime_rotation_alignment_ratio * 100.0,
+        top_transition.map(|row| row.market.as_str()).unwrap_or("-"),
+        top_transition
+            .map(|row| row.from_regime_bucket.as_str())
+            .unwrap_or("-"),
+        top_transition
+            .map(|row| row.to_regime_bucket.as_str())
+            .unwrap_or("-"),
+        top_transition.map(|row| row.transition_count).unwrap_or(0),
+        latest_transition.map(|row| row.market.as_str()).unwrap_or("-"),
+        latest_transition
+            .map(|row| row.last_transition_date.as_str())
+            .unwrap_or("-"),
+        latest_transition
+            .map(|row| row.from_regime_bucket.as_str())
+            .unwrap_or("-"),
+        latest_transition
+            .map(|row| row.to_regime_bucket.as_str())
+            .unwrap_or("-"),
+        avg_transition_gap_days,
         report.regime_rows.len(),
         report.factor_decay_rows.len(),
         report.factor_quintile_rows.len(),
         report.regime_decay_rows.len(),
+        report.regime_timeline_rows.len(),
+        report.regime_transition_rows.len(),
         report.rolling_ic_rows.len(),
         best_decay.map(|r| r.factor.as_str()).unwrap_or("-"),
         best_decay.map(|r| r.horizon_days).unwrap_or(0),
@@ -2209,6 +2394,10 @@ mod tests {
             std::path::Path::new("outputs_rust/test_research_report/factor_quintiles.csv");
         let regime_decay_path =
             std::path::Path::new("outputs_rust/test_research_report/regime_decay.csv");
+        let regime_timeline_path =
+            std::path::Path::new("outputs_rust/test_research_report/regime_timeline.csv");
+        let regime_transition_path =
+            std::path::Path::new("outputs_rust/test_research_report/regime_transitions.csv");
         let summary_text = fs::read_to_string(summary_path).expect("read summary");
         assert!(artifacts.json_path.exists());
         assert!(artifacts.markdown_path.exists());
@@ -2216,6 +2405,8 @@ mod tests {
         assert!(summary_path.exists());
         assert!(quintile_path.exists());
         assert!(regime_decay_path.exists());
+        assert!(regime_timeline_path.exists());
+        assert!(regime_transition_path.exists());
         assert!(summary_text.contains("dominant_winner_strategy_plugin="));
         assert!(summary_text.contains("dominant_winner_concentration="));
         assert!(summary_text.contains("unstable_folds="));
@@ -2228,5 +2419,8 @@ mod tests {
         assert!(summary_text.contains("regime_rotation_focus_market="));
         assert!(summary_text.contains("aligned_regime_count="));
         assert!(summary_text.contains("regime_rotation_alignment_ratio="));
+        assert!(summary_text.contains("top_regime_transition_market="));
+        assert!(summary_text.contains("latest_regime_transition_date="));
+        assert!(summary_text.contains("avg_regime_transition_gap_days="));
     }
 }

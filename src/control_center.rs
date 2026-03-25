@@ -257,7 +257,10 @@ fn render_snapshot(
             dq_pass,
             dq_warn,
             dq_fail,
-            if snapshot.research_report.get("top_regime_leader_market").is_some() {
+            if snapshot
+                .research_report
+                .contains_key("top_regime_leader_market")
+            {
                 "ready"
             } else {
                 "partial"
@@ -486,6 +489,46 @@ fn render_snapshot(
             snapshot
                 .research_report
                 .get("regime_rotation_alignment_ratio")
+                .map_or("-", String::as_str),
+        )?;
+        writeln!(
+            out,
+            "Regime Transitions | top={} {} -> {} count={} latest={} {} {} -> {} avg_gap_days={}",
+            snapshot
+                .research_report
+                .get("top_regime_transition_market")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("top_regime_transition_from_bucket")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("top_regime_transition_to_bucket")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("top_regime_transition_count")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("latest_regime_transition_date")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("latest_regime_transition_market")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("latest_regime_transition_from_bucket")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("latest_regime_transition_to_bucket")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("avg_regime_transition_gap_days")
                 .map_or("-", String::as_str),
         )?;
     }
