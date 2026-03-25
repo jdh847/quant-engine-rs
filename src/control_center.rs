@@ -383,6 +383,46 @@ fn render_snapshot(
                 .get("avg_regime_leader_ic")
                 .map_or("-", String::as_str),
         )?;
+        writeln!(
+            out,
+            "Factor Rotation | horizon={}d current={} {} ic={} dominant={} count={} switches={} streak={} {}",
+            snapshot
+                .research_report
+                .get("rotation_default_horizon_days")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("current_rotation_date")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("current_rotation_leader_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("current_rotation_leader_ic")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("dominant_rotation_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("dominant_rotation_factor_count")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("rotation_switches")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("latest_rotation_streak_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("latest_rotation_streak_count")
+                .map_or("-", String::as_str),
+        )?;
     }
 
     out.flush()?;

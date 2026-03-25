@@ -1295,9 +1295,61 @@ fn render_summary(report: &ResearchReport) -> String {
         regime_leaders.iter().map(|row| row.ic).sum::<f64>() / regime_leaders.len() as f64
     };
     let positive_regime_leader_count = regime_leaders.iter().filter(|row| row.ic > 0.0).count();
+    let rotation_horizon = report
+        .rolling_ic_rows
+        .iter()
+        .map(|row| row.horizon_days)
+        .max()
+        .unwrap_or(0);
+    let rotation_rows = if rotation_horizon == 0 {
+        Vec::new()
+    } else {
+        report
+            .rolling_ic_rows
+            .iter()
+            .filter(|row| row.horizon_days == rotation_horizon)
+            .collect::<Vec<_>>()
+    };
+    let mut rotation_by_date: BTreeMap<&str, &RollingIcRow> = BTreeMap::new();
+    for row in rotation_rows {
+        rotation_by_date
+            .entry(row.date.as_str())
+            .and_modify(|prev| {
+                if row.ic > prev.ic {
+                    *prev = row;
+                }
+            })
+            .or_insert(row);
+    }
+    let rotation_leaders = rotation_by_date.values().copied().collect::<Vec<_>>();
+    let current_rotation = rotation_leaders.last().copied();
+    let mut rotation_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for row in &rotation_leaders {
+        *rotation_counts.entry(row.factor.clone()).or_default() += 1;
+    }
+    let dominant_rotation = rotation_counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)));
+    let mut rotation_switches = 0usize;
+    for pair in rotation_leaders.windows(2) {
+        if pair[0].factor != pair[1].factor {
+            rotation_switches += 1;
+        }
+    }
+    let latest_rotation_streak = if let Some(last) = rotation_leaders.last() {
+        let factor = last.factor.clone();
+        let count = rotation_leaders
+            .iter()
+            .rev()
+            .take_while(|row| row.factor == factor)
+            .count();
+        (factor, count)
+    } else {
+        ("-".to_string(), 0usize)
+    };
     let latest_rolling = report.rolling_ic_rows.last();
     format!(
-        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\ntop_regime_leader_market={}\ntop_regime_leader_bucket={}\ntop_regime_leader_factor={}\ntop_regime_leader_horizon_days={}\ntop_regime_leader_ic={:.4}\ndominant_regime_factor={}\ndominant_regime_factor_count={}\navg_regime_leader_ic={:.4}\npositive_regime_leader_count={}\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
+        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\ntop_regime_leader_market={}\ntop_regime_leader_bucket={}\ntop_regime_leader_factor={}\ntop_regime_leader_horizon_days={}\ntop_regime_leader_ic={:.4}\ndominant_regime_factor={}\ndominant_regime_factor_count={}\navg_regime_leader_ic={:.4}\npositive_regime_leader_count={}\nrotation_default_horizon_days={}\ncurrent_rotation_date={}\ncurrent_rotation_leader_factor={}\ncurrent_rotation_leader_ic={:.4}\ndominant_rotation_factor={}\ndominant_rotation_factor_count={}\nrotation_switches={}\nlatest_rotation_streak_factor={}\nlatest_rotation_streak_count={}\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
         report.walk_forward_summary.folds,
         report.walk_forward_summary.avg_test_pnl_ratio * 100.0,
         report.walk_forward_summary.avg_test_sharpe,
@@ -1325,6 +1377,17 @@ fn render_summary(report: &ResearchReport) -> String {
         dominant_regime_factor.map(|(_, count)| *count).unwrap_or(0),
         avg_regime_leader_ic,
         positive_regime_leader_count,
+        rotation_horizon,
+        current_rotation.map(|row| row.date.as_str()).unwrap_or("-"),
+        current_rotation.map(|row| row.factor.as_str()).unwrap_or("-"),
+        current_rotation.map(|row| row.ic).unwrap_or(0.0),
+        dominant_rotation
+            .map(|(factor, _)| factor.as_str())
+            .unwrap_or("-"),
+        dominant_rotation.map(|(_, count)| *count).unwrap_or(0),
+        rotation_switches,
+        latest_rotation_streak.0,
+        latest_rotation_streak.1,
         report.regime_rows.len(),
         report.factor_decay_rows.len(),
         report.factor_quintile_rows.len(),
@@ -2066,5 +2129,8 @@ mod tests {
         assert!(summary_text.contains("top_regime_leader_market="));
         assert!(summary_text.contains("dominant_regime_factor="));
         assert!(summary_text.contains("positive_regime_leader_count="));
+        assert!(summary_text.contains("rotation_default_horizon_days="));
+        assert!(summary_text.contains("current_rotation_leader_factor="));
+        assert!(summary_text.contains("rotation_switches="));
     }
 }
