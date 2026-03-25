@@ -39,6 +39,7 @@ struct ControlCenterSnapshot {
     robustness: HashMap<String, String>,
     research_report: HashMap<String, String>,
     recent_compare: Option<CompareStatus>,
+    compare_history: Vec<CompareStatus>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,7 +162,8 @@ fn collect_snapshot(root: &Path) -> Result<ControlCenterSnapshot> {
         Some(path) => parse_key_value_file(&path)?,
         None => HashMap::new(),
     };
-    let recent_compare = load_recent_compare_status(root);
+    let compare_history = load_compare_history_status(root);
+    let recent_compare = compare_history.first().cloned();
 
     Ok(ControlCenterSnapshot {
         summary,
@@ -172,6 +174,7 @@ fn collect_snapshot(root: &Path) -> Result<ControlCenterSnapshot> {
         robustness,
         research_report,
         recent_compare,
+        compare_history,
     })
 }
 
@@ -583,6 +586,26 @@ fn render_snapshot(
                 }
             )?;
         }
+        if !snapshot.compare_history.is_empty() {
+            let driftiest = snapshot
+                .compare_history
+                .iter()
+                .max_by_key(|item| item.research_changes)
+                .cloned()
+                .unwrap_or_else(|| snapshot.compare_history[0].clone());
+            writeln!(
+                out,
+                "Research Compare Timeline | count={} latest={} driftiest_changes={} driftiest_top={}",
+                snapshot.compare_history.len(),
+                snapshot.recent_compare.as_ref().map_or("-", |item| item.winner.as_str()),
+                driftiest.research_changes,
+                if driftiest.top_research_keys.is_empty() {
+                    "-".to_string()
+                } else {
+                    driftiest.top_research_keys.join(",")
+                }
+            )?;
+        }
         let daemon_input = snapshot
             .daemon
             .as_ref()
@@ -639,7 +662,7 @@ fn first_existing_path(paths: &[PathBuf]) -> Option<PathBuf> {
     paths.iter().find(|p| p.exists()).cloned()
 }
 
-fn load_recent_compare_status(root: &Path) -> Option<CompareStatus> {
+fn load_compare_history_status(root: &Path) -> Vec<CompareStatus> {
     let mut candidate_dirs = Vec::<PathBuf>::new();
     if root.join("compare_report.json").exists() {
         candidate_dirs.push(root.to_path_buf());
@@ -666,12 +689,21 @@ fn load_recent_compare_status(root: &Path) -> Option<CompareStatus> {
         }
     }
 
-    let latest_dir = candidate_dirs.into_iter().max_by_key(|dir| {
-        fs::metadata(dir.join("compare_report.json"))
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-    })?;
-    let text = fs::read_to_string(latest_dir.join("compare_report.json")).ok()?;
+    candidate_dirs.sort_by_key(|dir| {
+        std::cmp::Reverse(
+            fs::metadata(dir.join("compare_report.json"))
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        )
+    });
+    candidate_dirs
+        .into_iter()
+        .filter_map(|dir| load_compare_status_from_dir(&dir))
+        .collect()
+}
+
+fn load_compare_status_from_dir(compare_dir: &Path) -> Option<CompareStatus> {
+    let text = fs::read_to_string(compare_dir.join("compare_report.json")).ok()?;
     let report: CompareReportStatus = serde_json::from_str(&text).ok()?;
     Some(CompareStatus {
         winner: report.winner_summary.winner,

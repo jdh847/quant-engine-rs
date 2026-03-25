@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{dashboard_text, DashboardText, Language};
@@ -256,6 +257,7 @@ struct CompareWinnerSummaryCompat {
 
 #[derive(Debug, Clone, Serialize)]
 struct RecentCompareUi {
+    modified_at: String,
     output_dir: String,
     output_href: String,
     html_href: String,
@@ -430,6 +432,7 @@ struct DashboardI18nText {
     compare_needs_two_runs: String,
     recent_compare: String,
     research_compare_panel: String,
+    research_compare_timeline: String,
     run_health: String,
     compare_health: String,
     audit_health: String,
@@ -595,6 +598,7 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         compare_needs_two_runs: t.compare_needs_two_runs.to_string(),
         recent_compare: t.recent_compare.to_string(),
         research_compare_panel: t.research_compare_panel.to_string(),
+        research_compare_timeline: t.research_compare_timeline.to_string(),
         run_health: t.run_health.to_string(),
         compare_health: t.compare_health.to_string(),
         audit_health: t.audit_health.to_string(),
@@ -804,7 +808,8 @@ pub fn build_dashboard_with_language(
     let registry_rows = read_registry_rows(&registry_path)?;
     let strategy_compare_rows = build_strategy_compare_rows(&registry_rows);
     let leaderboard_rows = read_leaderboard_rows(&leaderboard_path)?;
-    let recent_compare = discover_recent_compare(output_dir);
+    let compare_history = discover_compare_history(output_dir);
+    let recent_compare = compare_history.first().cloned();
     let daemon_state = read_daemon_state(&daemon_state_path);
     let daemon_input = daemon_state.as_ref().map(|state| PaperHintsDaemonInput {
         last_cycle: state.last_cycle,
@@ -854,6 +859,7 @@ pub fn build_dashboard_with_language(
     let audit_markets_json = serde_json::to_string(&audit_markets)?;
     let audit_config_sha_json = serde_json::to_string(&audit_config_sha)?;
     let recent_compare_json = serde_json::to_string(&recent_compare)?;
+    let compare_history_json = serde_json::to_string(&compare_history)?;
     let paper_hints_json = serde_json::to_string(&paper_hints)?;
     let registry_refresh_path_json = serde_json::to_string(&registry_refresh_path)?;
     let leaderboard_refresh_path_json = serde_json::to_string(&leaderboard_refresh_path)?;
@@ -1581,6 +1587,10 @@ th {{ color: var(--muted); font-weight: 600; }}
           <div class="subtle-title" id="research-compare-title">{research_compare_panel}</div>
           <div class="table-card" id="research-compare-block"></div>
         </div>
+        <div class="compare-block">
+          <div class="subtle-title" id="research-compare-timeline-title">{research_compare_timeline}</div>
+          <div class="table-card" id="research-compare-timeline-block"></div>
+        </div>
       </div>
     </section>
 
@@ -1669,6 +1679,7 @@ let dataQualityRows = {data_quality_json};
 let auditMarkets = {audit_markets_json};
 let auditConfigSha = {audit_config_sha_json};
 let recentCompare = {recent_compare_json};
+let compareHistory = {compare_history_json};
 let paperHints = {paper_hints_json};
 const registryRefreshPath = {registry_refresh_path_json};
 const leaderboardRefreshPath = {leaderboard_refresh_path_json};
@@ -2313,6 +2324,49 @@ function renderResearchComparePanel(text) {{
               <td>${{esc(row.key || '-')}}</td>
               <td>${{esc(row.baseline || '-')}}</td>
               <td>${{esc(row.candidate || '-')}}</td>
+            </tr>`).join('')
+          }}
+        </tbody>
+      </table>
+    </div>
+  `;
+}}
+
+function renderResearchCompareTimeline(text) {{
+  const root = document.getElementById('research-compare-timeline-block');
+  if (!root) return;
+  const rows = Array.isArray(compareHistory) ? compareHistory.slice(0, 8) : [];
+  if (!rows.length) {{
+    root.innerHTML = `<div class="summary">${{esc(text.compare_not_found)}}</div>`;
+    return;
+  }}
+  const topKey = rows[0] && rows[0].research_top_rows && rows[0].research_top_rows[0]
+    ? String(rows[0].research_top_rows[0].key || '-')
+    : '-';
+  root.innerHTML = `
+    <div style="padding:12px 14px;">
+      <div class="mini-grid" style="margin-bottom:10px;">
+        <div class="mini-kpi"><div class="k">${{esc(text.runs_label)}}</div><div class="v">${{rows.length}}</div></div>
+        <div class="mini-kpi"><div class="k">${{esc(text.top_deltas_label)}}</div><div class="v">${{esc(topKey)}}</div></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>${{esc(text.date)}}</th>
+            <th>${{esc(text.winner_summary)}}</th>
+            <th>${{esc(text.research_changes_label)}}</th>
+            <th>${{esc(text.top_deltas_label)}}</th>
+            <th>${{esc(text.output_dir_label)}}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${{
+            rows.map((row) => `<tr>
+              <td>${{esc(row.modified_at || '-')}}</td>
+              <td>${{esc(row.winner || '-')}}</td>
+              <td>${{Number(row.research_changes || 0)}}</td>
+              <td>${{esc(row.research_top_rows && row.research_top_rows[0] ? String(row.research_top_rows[0].key || '-') : '-')}}</td>
+              <td><a href="${{esc(row.output_href || '#')}}">${{esc(row.output_dir || '-')}}</a></td>
             </tr>`).join('')
           }}
         </tbody>
@@ -3619,6 +3673,7 @@ function applyLanguage(lang) {{
   document.getElementById('compare-hint').textContent = text.compare_hint;
   document.getElementById('recent-compare-title').textContent = text.recent_compare;
   document.getElementById('research-compare-title').textContent = text.research_compare_panel;
+  document.getElementById('research-compare-timeline-title').textContent = text.research_compare_timeline;
   document.getElementById('public-leaderboard-title').textContent = text.public_leaderboard;
   document.getElementById('leaderboard-source-label').textContent = text.source;
   document.getElementById('leaderboard-time-label').textContent = text.time_range;
@@ -3752,6 +3807,7 @@ function applyLanguage(lang) {{
   renderStrategyComparison(text);
   renderRecentCompare(text);
   renderResearchComparePanel(text);
+  renderResearchCompareTimeline(text);
   renderPublicLeaderboard(text);
   renderResearch(text);
   renderDataQuality();
@@ -4108,6 +4164,7 @@ refreshFromFiles();
         compare_hint = text.compare_hint,
         recent_compare = text.recent_compare,
         research_compare_panel = text.research_compare_panel,
+        research_compare_timeline = text.research_compare_timeline,
         export_csv = text.export_csv,
         export_markdown = text.export_markdown,
         research = text.research,
@@ -4162,6 +4219,7 @@ refreshFromFiles();
         audit_markets_json = audit_markets_json,
         audit_config_sha_json = audit_config_sha_json,
         recent_compare_json = recent_compare_json,
+        compare_history_json = compare_history_json,
         paper_hints_json = paper_hints_json,
         registry_refresh_path_json = registry_refresh_path_json,
         leaderboard_refresh_path_json = leaderboard_refresh_path_json,
@@ -4804,7 +4862,7 @@ fn kv_string(value: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
-fn discover_recent_compare(output_dir: &Path) -> Option<RecentCompareUi> {
+fn discover_compare_history(output_dir: &Path) -> Vec<RecentCompareUi> {
     let mut candidate_dirs = Vec::<PathBuf>::new();
     if output_dir.join("compare_report.json").exists() {
         candidate_dirs.push(output_dir.to_path_buf());
@@ -4831,19 +4889,28 @@ fn discover_recent_compare(output_dir: &Path) -> Option<RecentCompareUi> {
         }
     }
 
-    let latest_dir = candidate_dirs.into_iter().max_by_key(|dir| {
-        fs::metadata(dir.join("compare_report.json"))
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    })?;
+    let mut history = candidate_dirs
+        .into_iter()
+        .filter_map(|dir| build_recent_compare_ui(output_dir, &dir))
+        .collect::<Vec<_>>();
+    history.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    history
+}
 
-    let report_text = fs::read_to_string(latest_dir.join("compare_report.json")).ok()?;
+fn build_recent_compare_ui(output_dir: &Path, compare_dir: &Path) -> Option<RecentCompareUi> {
+    let report_path = compare_dir.join("compare_report.json");
+    let report_text = fs::read_to_string(&report_path).ok()?;
     let report: CompareReportCompat = serde_json::from_str(&report_text).ok()?;
+    let modified_at = fs::metadata(&report_path)
+        .and_then(|m| m.modified())
+        .map(system_time_to_rfc3339)
+        .unwrap_or_else(|_| "-".to_string());
     Some(RecentCompareUi {
-        output_dir: latest_dir.display().to_string(),
-        output_href: relative_href(output_dir, &latest_dir),
-        html_href: relative_href(output_dir, &latest_dir.join("compare_report.html")),
-        json_href: relative_href(output_dir, &latest_dir.join("compare_report.json")),
+        modified_at,
+        output_dir: compare_dir.display().to_string(),
+        output_href: relative_href(output_dir, compare_dir),
+        html_href: relative_href(output_dir, &compare_dir.join("compare_report.html")),
+        json_href: relative_href(output_dir, &compare_dir.join("compare_report.json")),
         baseline_dir: report.baseline_dir,
         candidate_dir: report.candidate_dir,
         metric_changes: report.metric_rows.iter().filter(|r| r.changed).count(),
@@ -4867,6 +4934,11 @@ fn discover_recent_compare(output_dir: &Path) -> Option<RecentCompareUi> {
             .cloned()
             .collect(),
     })
+}
+
+fn system_time_to_rfc3339(time: SystemTime) -> String {
+    let dt: DateTime<Utc> = time.into();
+    dt.to_rfc3339()
 }
 
 fn relative_href(from_dir: &Path, to_path: &Path) -> String {
@@ -5344,6 +5416,32 @@ mod tests {
             "<html><body>compare html</body></html>",
         )
         .expect("write compare html");
+        let compare_dir_old = output_dir.join("compare_demo_old");
+        fs::create_dir_all(&compare_dir_old).expect("compare dir old");
+        fs::write(
+            compare_dir_old.join("compare_report.json"),
+            r#"{
+  "baseline_dir":"outputs_rust/run_prev_a",
+  "candidate_dir":"outputs_rust/run_prev_b",
+  "winner_summary":{"winner":"baseline","score":1,"wins":["sharpe: 0.9 -> 0.7"],"losses":["pnl_ratio: 0.08 -> 0.10"],"neutral":[]},
+  "metric_rows":[{"key":"sharpe","baseline":"0.9","candidate":"0.7","changed":true}],
+  "audit_rows":[],
+  "data_quality_rows":[],
+  "research_rows":[{"key":"dominant_rotation_factor","baseline":"momentum","candidate":"low_vol","changed":true}]
+}"#,
+        )
+        .expect("write compare json old");
+        fs::write(
+            compare_dir_old.join("compare_report.html"),
+            "<html><body>compare html old</body></html>",
+        )
+        .expect("write compare html old");
+        fs::write(
+            compare_dir.join("compare_report.json"),
+            fs::read_to_string(compare_dir.join("compare_report.json"))
+                .expect("refresh compare json source"),
+        )
+        .expect("refresh compare json mtime");
         fs::write(
             output_dir.join("paper_daemon_state.json"),
             r#"{
@@ -5396,6 +5494,7 @@ mod tests {
         assert!(html.contains("compare-copy-btn"));
         assert!(html.contains("recent-compare-block"));
         assert!(html.contains("research-compare-block"));
+        assert!(html.contains("research-compare-timeline-block"));
         assert!(html.contains("leaderboard-detail-rows"));
         assert!(html.contains("researchWalkForwardRows"));
         assert!(html.contains("researchDecayRows"));
@@ -5410,9 +5509,11 @@ mod tests {
         assert!(html.contains("cargo run --bin compare -- --baseline-dir"));
         assert!(html.contains("compare_demo/compare_report.html"));
         assert!(html.contains("compare_demo"));
+        assert!(html.contains("compare_demo_old"));
         assert!(html.contains("Metric Changes"));
         assert!(html.contains("Research Changes"));
         assert!(html.contains("Research Compare Panel"));
+        assert!(html.contains("Research Compare Timeline"));
         assert!(html.contains("Winner Summary"));
         assert!(html.contains("Candidate Wins"));
         assert!(html.contains("momentum"));
