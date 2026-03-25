@@ -1232,6 +1232,26 @@ fn render_markdown(report: &ResearchReport) -> String {
 }
 
 fn render_summary(report: &ResearchReport) -> String {
+    let mut winner_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for row in &report.walk_forward_rows {
+        *winner_counts
+            .entry((row.strategy_plugin.clone(), row.portfolio_method.clone()))
+            .or_default() += 1;
+    }
+    let dominant_winner = winner_counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)));
+    let dominant_winner_count = dominant_winner.map(|(_, count)| *count).unwrap_or(0);
+    let dominant_winner_concentration = if report.walk_forward_rows.is_empty() {
+        0.0
+    } else {
+        dominant_winner_count as f64 / report.walk_forward_rows.len() as f64
+    };
+    let unstable_folds = report
+        .walk_forward_rows
+        .iter()
+        .filter(|row| row.test_sharpe <= 0.0 || row.train_test_gap > 0.5)
+        .count();
     let best_decay = report
         .factor_decay_rows
         .iter()
@@ -1246,12 +1266,21 @@ fn render_summary(report: &ResearchReport) -> String {
         .max_by(|a, b| a.ic.total_cmp(&b.ic));
     let latest_rolling = report.rolling_ic_rows.last();
     format!(
-        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
+        "folds={}\navg_test_pnl_ratio={:.4}%\navg_test_sharpe={:.4}\navg_train_test_gap={:.4}\nstrategy_turnover_ratio={:.2}%\ndominant_winner_strategy_plugin={}\ndominant_winner_portfolio_method={}\ndominant_winner_count={}\ndominant_winner_concentration={:.2}%\nunstable_folds={}\nregime_rows={}\nfactor_decay_rows={}\nfactor_quintile_rows={}\nregime_decay_rows={}\nrolling_ic_rows={}\nbest_decay_factor={}\nbest_decay_horizon_days={}\nbest_decay_ic={:.4}\nbest_monotonic_factor={}\nbest_monotonic_horizon_days={}\nbest_monotonicity_score={:.4}\nbest_regime_decay_market={}\nbest_regime_decay_bucket={}\nbest_regime_decay_factor={}\nbest_regime_decay_horizon_days={}\nbest_regime_decay_ic={:.4}\nlatest_rolling_factor={}\nlatest_rolling_horizon_days={}\nlatest_rolling_ic={:.4}\n",
         report.walk_forward_summary.folds,
         report.walk_forward_summary.avg_test_pnl_ratio * 100.0,
         report.walk_forward_summary.avg_test_sharpe,
         report.walk_forward_summary.avg_train_test_gap,
         report.walk_forward_summary.strategy_turnover_ratio * 100.0,
+        dominant_winner
+            .map(|((plugin, _), _)| plugin.as_str())
+            .unwrap_or("-"),
+        dominant_winner
+            .map(|((_, method), _)| method.as_str())
+            .unwrap_or("-"),
+        dominant_winner_count,
+        dominant_winner_concentration * 100.0,
+        unstable_folds,
         report.regime_rows.len(),
         report.factor_decay_rows.len(),
         report.factor_quintile_rows.len(),
@@ -1936,6 +1965,8 @@ fn json_for_html<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use crate::{config::load_config, data::CsvDataPortal};
 
     use super::{write_research_report, ResearchReportRequest, WalkForwardRequest};
@@ -1978,11 +2009,15 @@ mod tests {
             std::path::Path::new("outputs_rust/test_research_report/factor_quintiles.csv");
         let regime_decay_path =
             std::path::Path::new("outputs_rust/test_research_report/regime_decay.csv");
+        let summary_text = fs::read_to_string(summary_path).expect("read summary");
         assert!(artifacts.json_path.exists());
         assert!(artifacts.markdown_path.exists());
         assert!(artifacts.html_path.exists());
         assert!(summary_path.exists());
         assert!(quintile_path.exists());
         assert!(regime_decay_path.exists());
+        assert!(summary_text.contains("dominant_winner_strategy_plugin="));
+        assert!(summary_text.contains("dominant_winner_concentration="));
+        assert!(summary_text.contains("unstable_folds="));
     }
 }

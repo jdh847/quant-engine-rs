@@ -319,6 +319,30 @@ fn render_snapshot(
                 .get("best_regime_decay_ic")
                 .map_or("-", String::as_str),
         )?;
+        writeln!(
+            out,
+            "Walk-Forward Winners | dominant={} / {} count={} concentration={} unstable_folds={}",
+            snapshot
+                .research_report
+                .get("dominant_winner_strategy_plugin")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("dominant_winner_portfolio_method")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("dominant_winner_count")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("dominant_winner_concentration")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("unstable_folds")
+                .map_or("-", String::as_str),
+        )?;
     }
 
     out.flush()?;
