@@ -16,11 +16,35 @@ pub struct PaperHintsCompareInput {
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PaperHintMarketReport {
+    pub market: String,
+    pub stance: String,
+    pub headline: String,
+    pub bullets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct PaperHintsReport {
     pub stance: String,
     pub headline: String,
     pub watch_markets: Vec<String>,
     pub bullets: Vec<String>,
+    pub market_hints: Vec<PaperHintMarketReport>,
+}
+
+struct MarketHintsContext<'a> {
+    top_market: &'a str,
+    top_bucket: &'a str,
+    top_factor: &'a str,
+    transition_market: &'a str,
+    transition_from: &'a str,
+    transition_to: &'a str,
+    transition_date: &'a str,
+    rotation_factor: &'a str,
+    rotation_date: &'a str,
+    rotation_switches: usize,
+    daemon: Option<&'a PaperHintsDaemonInput>,
+    compare: Option<&'a PaperHintsCompareInput>,
 }
 
 pub fn build_paper_hints(
@@ -120,11 +144,27 @@ pub fn build_paper_hints(
         bullets.push("paper-only: no actionable signals yet".to_string());
     }
 
+    let market_hints = build_market_hints(&MarketHintsContext {
+        top_market: top_market.as_str(),
+        top_bucket: top_bucket.as_str(),
+        top_factor: top_factor.as_str(),
+        transition_market: transition_market.as_str(),
+        transition_from: transition_from.as_str(),
+        transition_to: transition_to.as_str(),
+        transition_date: transition_date.as_str(),
+        rotation_factor: rotation_factor.as_str(),
+        rotation_date: rotation_date.as_str(),
+        rotation_switches,
+        daemon,
+        compare,
+    });
+
     PaperHintsReport {
         stance,
         headline,
         watch_markets,
         bullets,
+        market_hints,
     }
 }
 
@@ -144,7 +184,108 @@ pub fn render_paper_hints_summary(report: &PaperHintsReport) -> String {
     for (idx, bullet) in report.bullets.iter().enumerate() {
         out.push_str(&format!("bullet_{}={}\n", idx + 1, bullet));
     }
+    out.push_str(&format!(
+        "market_hints_count={}\n",
+        report.market_hints.len()
+    ));
+    for (idx, market_hint) in report.market_hints.iter().enumerate() {
+        out.push_str(&format!(
+            "market_hint_{}_market={}\nmarket_hint_{}_stance={}\nmarket_hint_{}_headline={}\n",
+            idx + 1,
+            market_hint.market,
+            idx + 1,
+            market_hint.stance,
+            idx + 1,
+            market_hint.headline
+        ));
+        for (bullet_idx, bullet) in market_hint.bullets.iter().enumerate() {
+            out.push_str(&format!(
+                "market_hint_{}_bullet_{}={}\n",
+                idx + 1,
+                bullet_idx + 1,
+                bullet
+            ));
+        }
+    }
     out
+}
+
+fn build_market_hints(ctx: &MarketHintsContext<'_>) -> Vec<PaperHintMarketReport> {
+    let mut hints = Vec::new();
+    for market in [ctx.top_market, ctx.transition_market] {
+        if market == "-"
+            || hints
+                .iter()
+                .any(|hint: &PaperHintMarketReport| hint.market == market)
+        {
+            continue;
+        }
+        let is_transition_market = market == ctx.transition_market && ctx.transition_market != "-";
+        let is_leader_market = market == ctx.top_market && ctx.top_market != "-";
+        let compare_changes = ctx.compare.map(|item| item.research_changes).unwrap_or(0);
+        let daemon_alerts = ctx.daemon.map(|item| item.alerts).unwrap_or(0);
+        let stance = if daemon_alerts > 0 {
+            "RISK"
+        } else if is_transition_market || compare_changes > 0 || ctx.rotation_switches > 1 {
+            "WATCH"
+        } else {
+            "HEALTHY"
+        };
+        let headline = if is_transition_market {
+            format!(
+                "{market}: regime shifted {} -> {} on {}",
+                ctx.transition_from, ctx.transition_to, ctx.transition_date
+            )
+        } else if is_leader_market {
+            format!("{market}: leader {} in {}", ctx.top_factor, ctx.top_bucket)
+        } else {
+            format!("{market}: paper-only monitoring")
+        };
+        let mut bullets = Vec::new();
+        if is_leader_market {
+            bullets.push(format!(
+                "leader factor={} bucket={}",
+                ctx.top_factor, ctx.top_bucket
+            ));
+        }
+        if is_transition_market {
+            bullets.push(format!(
+                "latest transition={} -> {} on {}",
+                ctx.transition_from, ctx.transition_to, ctx.transition_date
+            ));
+        }
+        if ctx.rotation_factor != "-" {
+            bullets.push(format!(
+                "rotation leader={} on {} switches={}",
+                ctx.rotation_factor, ctx.rotation_date, ctx.rotation_switches
+            ));
+        }
+        if let Some(compare) = ctx.compare {
+            let winner = if compare.winner.is_empty() {
+                "-"
+            } else {
+                compare.winner.as_str()
+            };
+            bullets.push(format!(
+                "compare winner={winner} research_changes={}",
+                compare.research_changes
+            ));
+        }
+        if let Some(daemon) = ctx.daemon {
+            bullets.push(format!(
+                "daemon alerts={} max_drawdown={:.2}%",
+                daemon.alerts,
+                daemon.max_drawdown_observed * 100.0
+            ));
+        }
+        hints.push(PaperHintMarketReport {
+            market: market.to_string(),
+            stance: stance.to_string(),
+            headline,
+            bullets,
+        });
+    }
+    hints
 }
 
 fn value_or_dash(value: Option<&String>) -> String {
@@ -229,8 +370,12 @@ mod tests {
         assert!(report.headline.contains("JP shifted"));
         assert!(report.watch_markets.iter().any(|item| item == "US"));
         assert!(report.watch_markets.iter().any(|item| item == "JP"));
+        assert_eq!(report.market_hints.len(), 2);
+        assert!(report.market_hints.iter().any(|item| item.market == "US"));
+        assert!(report.market_hints.iter().any(|item| item.market == "JP"));
         let summary = render_paper_hints_summary(&report);
         assert!(summary.contains("watch_markets=US|JP"));
+        assert!(summary.contains("market_hints_count=2"));
         assert!(summary.contains("bullet_1="));
     }
 }

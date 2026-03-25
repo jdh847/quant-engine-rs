@@ -617,6 +617,18 @@ fn render_snapshot(
             },
             hints.headline
         )?;
+        if !hints.market_hints.is_empty() {
+            writeln!(
+                out,
+                "Paper Hint Feed | {}",
+                hints
+                    .market_hints
+                    .iter()
+                    .map(|hint| format!("{}:{}:{}", hint.market, hint.stance, hint.headline))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            )?;
+        }
     }
 
     out.flush()?;

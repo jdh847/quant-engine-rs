@@ -1006,6 +1006,7 @@ th {{ color: var(--muted); font-weight: 600; }}
 .ops-card .status.risk {{ color:#7f1d1d; background:rgba(254,226,226,.86); border-color:rgba(127,29,29,.16); }}
 .ops-card .main {{ font-size:18px; font-weight:800; margin-top:10px; line-height:1.25; }}
 .ops-card .sub {{ color: var(--muted); font-size:13px; margin-top:8px; line-height:1.45; }}
+.feed-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:12px; }}
 @keyframes rise {{ from {{ transform: translateY(8px); opacity: 0; }} to {{ transform: translateY(0); opacity: 1; }} }}
 @media (max-width: 960px) {{
   .grid {{ grid-template-columns: 1fr; }}
@@ -1051,6 +1052,7 @@ th {{ color: var(--muted); font-weight: 600; }}
         <span class="chip" id="paper-hints-chip"></span>
       </div>
       <div id="paper-hints-card" class="regime-card"></div>
+      <div id="paper-hints-feed" class="feed-grid"></div>
     </section>
 
     <div class="grid">
@@ -2618,7 +2620,8 @@ function healthBadgeClass(level) {{
 function renderPaperHints(text) {{
   const chip = document.getElementById('paper-hints-chip');
   const root = document.getElementById('paper-hints-card');
-  if (!chip || !root) return;
+  const feed = document.getElementById('paper-hints-feed');
+  if (!chip || !root || !feed) return;
   const stance = String((paperHints && paperHints.stance) || 'HEALTHY').toUpperCase();
   chip.textContent = stance;
   const chipClass = stance === 'RISK' ? 'bad' : (stance === 'WATCH' ? 'warn' : 'ok');
@@ -2635,6 +2638,19 @@ function renderPaperHints(text) {{
     <div class="regime-sub">${{esc(text.watch_markets_label)}}=${{esc(markets.length ? markets.join(' | ') : '-')}} | stance=${{esc(stance)}}</div>
     <div class="summary" style="margin-top:10px;">${{esc(bullets.length ? bullets.join('\n') : 'paper-only: no actionable signals yet')}}</div>
   `;
+  const marketHints = Array.isArray(paperHints && paperHints.market_hints) ? paperHints.market_hints : [];
+  feed.innerHTML = marketHints.length
+    ? marketHints.map((item) => {{
+        const itemStance = String(item && item.stance || 'HEALTHY').toUpperCase();
+        const itemBullets = Array.isArray(item && item.bullets) ? item.bullets.filter(Boolean) : [];
+        return `<div class="regime-card">
+          <div class="regime-title">${{esc(text.market)}} / ${{esc(itemStance)}}</div>
+          <div class="regime-main">${{esc((item && item.market) || '-')}}</div>
+          <div class="regime-sub">${{esc((item && item.headline) || '-')}}</div>
+          <div class="summary" style="margin-top:10px;">${{esc(itemBullets.length ? itemBullets.join('\n') : 'paper-only: no actionable signals yet')}}</div>
+        </div>`;
+      }}).join('')
+    : `<div class="sub">paper-only: waiting for market-level hints</div>`;
 }}
 
 function renderPaperOpsCenter(text) {{
@@ -5358,6 +5374,7 @@ mod tests {
         assert!(html.contains("paper-ops-chip"));
         assert!(html.contains("Paper Hints"));
         assert!(html.contains("paper-hints-card"));
+        assert!(html.contains("paper-hints-feed"));
         assert!(html.contains("Research"));
         assert!(html.contains("Walk-Forward Winner Board"));
         assert!(html.contains("Regime-Aware Leaderboard"));
@@ -5426,6 +5443,7 @@ mod tests {
         assert!(html.contains("aligned_regime_count"));
         assert!(html.contains("top_regime_transition_market"));
         assert!(output_dir.join("paper_hints_summary.txt").exists());
+        assert!(html.contains("\"market_hints\""));
         assert!(html.contains("latest_regime_transition_date"));
         assert!(html.contains("trend_down_high_vol"));
         assert!(html.contains("best_monotonic_factor"));
