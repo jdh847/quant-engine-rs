@@ -283,6 +283,42 @@ fn render_snapshot(
                 .get("latest_rolling_ic")
                 .map_or("-", String::as_str),
         )?;
+        writeln!(
+            out,
+            "Research Signals | best_monotonic={} {}d score={} best_regime_decay={} {} {} {}d ic={}",
+            snapshot
+                .research_report
+                .get("best_monotonic_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_monotonic_horizon_days")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_monotonicity_score")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_regime_decay_market")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_regime_decay_bucket")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_regime_decay_factor")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_regime_decay_horizon_days")
+                .map_or("-", String::as_str),
+            snapshot
+                .research_report
+                .get("best_regime_decay_ic")
+                .map_or("-", String::as_str),
+        )?;
     }
 
     out.flush()?;

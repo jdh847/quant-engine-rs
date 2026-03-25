@@ -114,6 +114,32 @@ struct RegimeSplitRowUi {
     avg_selected_symbols: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FactorQuintileRowUi {
+    scope: String,
+    factor: String,
+    horizon_days: usize,
+    observations: usize,
+    q1_avg_return: f64,
+    q2_avg_return: f64,
+    q3_avg_return: f64,
+    q4_avg_return: f64,
+    q5_avg_return: f64,
+    monotonicity_score: f64,
+    q5_q1_spread: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegimeDecayRowUi {
+    market: String,
+    regime_bucket: String,
+    factor: String,
+    horizon_days: usize,
+    observations: usize,
+    ic: f64,
+    long_short_spread: f64,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ResearchReportCompat {
     #[serde(default)]
@@ -122,6 +148,10 @@ struct ResearchReportCompat {
     factor_decay_rows: Vec<FactorDecayRowUi>,
     #[serde(default)]
     rolling_ic_rows: Vec<RollingIcRowUi>,
+    #[serde(default)]
+    factor_quintile_rows: Vec<FactorQuintileRowUi>,
+    #[serde(default)]
+    regime_decay_rows: Vec<RegimeDecayRowUi>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -335,10 +365,14 @@ struct DashboardI18nText {
     decay_overview: String,
     rolling_ic: String,
     regime_split: String,
+    quantile_ladder: String,
+    regime_conditional_decay: String,
     folds: String,
     avg_test_sharpe_short: String,
     best_decay: String,
     latest_rolling: String,
+    best_monotonic: String,
+    best_regime_decay: String,
     horizon_days: String,
     ic_short: String,
     spread: String,
@@ -348,6 +382,8 @@ struct DashboardI18nText {
     composite_alpha: String,
     regime_bucket: String,
     avg_selected_symbols: String,
+    monotonicity: String,
+    ladder: String,
     start: String,
     end: String,
     buy: String,
@@ -456,10 +492,14 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         decay_overview: t.decay_overview.to_string(),
         rolling_ic: t.rolling_ic.to_string(),
         regime_split: t.regime_split.to_string(),
+        quantile_ladder: t.quantile_ladder.to_string(),
+        regime_conditional_decay: t.regime_conditional_decay.to_string(),
         folds: t.folds.to_string(),
         avg_test_sharpe_short: t.avg_test_sharpe_short.to_string(),
         best_decay: t.best_decay.to_string(),
         latest_rolling: t.latest_rolling.to_string(),
+        best_monotonic: t.best_monotonic.to_string(),
+        best_regime_decay: t.best_regime_decay.to_string(),
         horizon_days: t.horizon_days.to_string(),
         ic_short: t.ic_short.to_string(),
         spread: t.spread.to_string(),
@@ -469,6 +509,8 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         composite_alpha: t.composite_alpha.to_string(),
         regime_bucket: t.regime_bucket.to_string(),
         avg_selected_symbols: t.avg_selected_symbols.to_string(),
+        monotonicity: t.monotonicity.to_string(),
+        ladder: t.ladder.to_string(),
         start: t.start.to_string(),
         end: t.end.to_string(),
         buy: t.buy.to_string(),
@@ -583,8 +625,13 @@ pub fn build_dashboard_with_language(
     let data_quality_html = escape_html(&data_quality_summary);
     let data_quality_rows = read_data_quality_rows(&data_quality_report_path)?;
     let (audit_config_sha, audit_markets) = read_audit_snapshot(&audit_json_path);
-    let (research_regime_rows, research_decay_rows, research_rolling_rows) =
-        read_research_report(&research_json_path);
+    let (
+        research_regime_rows,
+        research_decay_rows,
+        research_rolling_rows,
+        research_quintile_rows,
+        research_regime_decay_rows,
+    ) = read_research_report(&research_json_path);
     let registry_rows = read_registry_rows(&registry_path)?;
     let strategy_compare_rows = build_strategy_compare_rows(&registry_rows);
     let leaderboard_rows = read_leaderboard_rows(&leaderboard_path)?;
@@ -602,6 +649,8 @@ pub fn build_dashboard_with_language(
     let research_regime_json = serde_json::to_string(&research_regime_rows)?;
     let research_decay_json = serde_json::to_string(&research_decay_rows)?;
     let research_rolling_json = serde_json::to_string(&research_rolling_rows)?;
+    let research_quintile_json = serde_json::to_string(&research_quintile_rows)?;
+    let research_regime_decay_json = serde_json::to_string(&research_regime_decay_rows)?;
     let data_quality_json = serde_json::to_string(&data_quality_rows)?;
     let audit_markets_json = serde_json::to_string(&audit_markets)?;
     let audit_config_sha_json = serde_json::to_string(&audit_config_sha)?;
@@ -987,6 +1036,63 @@ th {{ color: var(--muted); font-weight: 600; }}
           </div>
         </div>
       </div>
+      <div class="grid" style="margin-top: 12px;">
+        <div class="stack">
+          <div class="mini-toolbar">
+            <span class="subtle-title" id="quantile-title" style="margin:0;">{quantile_ladder}</span>
+            <label class="pill"><span id="research-quintile-scope-label">{scope}</span>
+              <select id="research-quintile-scope" class="select"></select>
+            </label>
+            <label class="pill"><span id="research-quintile-horizon-label">{horizon_days}</span>
+              <select id="research-quintile-horizon" class="select"></select>
+            </label>
+          </div>
+          <div class="chart-shell">
+            <div id="research-quintile-chart"></div>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th id="research-quintile-factor">{factors}</th>
+                  <th id="research-quintile-obs">{observations}</th>
+                  <th id="research-quintile-monotonicity">{monotonicity}</th>
+                  <th id="research-quintile-spread">{spread}</th>
+                </tr>
+              </thead>
+              <tbody id="research-quintile-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="mini-toolbar">
+            <span class="subtle-title" id="regime-decay-title" style="margin:0;">{regime_conditional_decay}</span>
+            <label class="pill"><span id="research-regime-decay-market-label">{market}</span>
+              <select id="research-regime-decay-market" class="select"></select>
+            </label>
+            <label class="pill"><span id="research-regime-decay-bucket-label">{regime_bucket}</span>
+              <select id="research-regime-decay-bucket" class="select"></select>
+            </label>
+          </div>
+          <div class="chart-shell">
+            <div id="research-regime-decay-chart"></div>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th id="research-regime-decay-factor">{factors}</th>
+                  <th id="research-regime-decay-horizon">{horizon_days}</th>
+                  <th id="research-regime-decay-obs">{observations}</th>
+                  <th id="research-regime-decay-ic">{ic_short}</th>
+                  <th id="research-regime-decay-spread">{spread}</th>
+                </tr>
+              </thead>
+              <tbody id="research-regime-decay-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="panel" data-delay="5" style="margin-top: 16px;">
@@ -1170,6 +1276,8 @@ let researchSummaryKv = {research_summary_kv_json};
 let researchRegimeRows = {research_regime_json};
 let researchDecayRows = {research_decay_json};
 let researchRollingRows = {research_rolling_json};
+let researchQuintileRows = {research_quintile_json};
+let researchRegimeDecayRows = {research_regime_decay_json};
 let dataQualityRows = {data_quality_json};
 let auditMarkets = {audit_markets_json};
 let auditConfigSha = {audit_config_sha_json};
@@ -1465,6 +1573,32 @@ function lineChartSvg(series, width, height) {{
     <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
     <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
     ${{lines}}
+  </svg>`;
+}}
+
+function ladderChartSvg(values, width, height, label) {{
+  const padding = 24;
+  const min = Math.min(...values, 0);
+  const max = Math.max(...values, 0);
+  const span = Math.max(max - min, 1e-6);
+  const zeroY = height - padding - ((0 - min) / span) * (height - padding * 2);
+  const barWidth = Math.max(20, (width - padding * 2) / Math.max(values.length * 1.8, 1));
+  const gap = ((width - padding * 2) - barWidth * values.length) / Math.max(values.length - 1, 1);
+  const bars = values.map((v, idx) => {{
+    const x = padding + idx * (barWidth + gap);
+    const valueY = height - padding - ((v - min) / span) * (height - padding * 2);
+    const y = Math.min(valueY, zeroY);
+    const h = Math.max(2, Math.abs(zeroY - valueY));
+    const fill = v >= 0 ? 'rgba(15,118,110,0.9)' : 'rgba(185,28,28,0.85)';
+    return `<rect x="${{x.toFixed(1)}}" y="${{y.toFixed(1)}}" width="${{barWidth.toFixed(1)}}" height="${{h.toFixed(1)}}" rx="8" fill="${{fill}}" />
+      <text x="${{(x + barWidth / 2).toFixed(1)}}" y="${{(height - 8).toFixed(1)}}" fill="rgb(51,65,85)" font-size="11" text-anchor="middle">Q${{idx + 1}}</text>
+      <text x="${{(x + barWidth / 2).toFixed(1)}}" y="${{(Math.max(14, y - 4)).toFixed(1)}}" fill="rgb(51,65,85)" font-size="10" text-anchor="middle">${{fmtSignedPct(v)}}</text>`;
+  }}).join('');
+  return `<svg viewBox="0 0 ${{width}} ${{height}}" aria-label="${{esc(label || "ladder chart")}}">
+    <line x1="${{padding}}" y1="${{zeroY}}" x2="${{width - padding}}" y2="${{zeroY}}" stroke="rgba(15,23,42,0.16)" stroke-dasharray="4 4" />
+    <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
+    <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="rgba(15,23,42,0.16)" />
+    ${{bars}}
   </svg>`;
 }}
 
@@ -2065,9 +2199,54 @@ function syncResearchControls(text) {{
     horizonSel.value = horizons.map(String).includes(prevHorizon) ? prevHorizon : String(horizons[horizons.length - 1]);
   }}
 
+  const quintileScopeSel = document.getElementById('research-quintile-scope');
+  const prevQuintileScope = quintileScopeSel.value || 'ALL';
+  const quintileScopes = [...new Set((researchQuintileRows || []).map((r) => r.scope || 'ALL'))];
+  const orderedQuintileScopes = quintileScopes.includes('ALL')
+    ? ['ALL', ...quintileScopes.filter((s) => s !== 'ALL').sort()]
+    : quintileScopes.sort();
+  quintileScopeSel.innerHTML = orderedQuintileScopes.map((scope) => `<option value="${{esc(scope)}}">${{esc(scope)}}</option>`).join('');
+  quintileScopeSel.value = orderedQuintileScopes.includes(prevQuintileScope)
+    ? prevQuintileScope
+    : (orderedQuintileScopes[0] || 'ALL');
+
+  const quintileHorizonSel = document.getElementById('research-quintile-horizon');
+  const prevQuintileHorizon = quintileHorizonSel.value || '';
+  const quintileHorizons = [...new Set((researchQuintileRows || []).map((r) => Number(r.horizon_days || 0)).filter(Boolean))].sort((a, b) => a - b);
+  quintileHorizonSel.innerHTML = quintileHorizons.map((h) => `<option value="${{h}}">${{h}}d</option>`).join('');
+  if (quintileHorizons.length > 0) {{
+    quintileHorizonSel.value = quintileHorizons.map(String).includes(prevQuintileHorizon)
+      ? prevQuintileHorizon
+      : String(quintileHorizons[quintileHorizons.length - 1]);
+  }}
+
+  const regimeDecayMarketSel = document.getElementById('research-regime-decay-market');
+  const prevDecayMarket = regimeDecayMarketSel.value || '';
+  const regimeDecayMarkets = [...new Set((researchRegimeDecayRows || []).map((r) => r.market).filter(Boolean))].sort();
+  regimeDecayMarketSel.innerHTML = regimeDecayMarkets.map((m) => `<option value="${{esc(m)}}">${{esc(m)}}</option>`).join('');
+  if (regimeDecayMarkets.length > 0) {{
+    regimeDecayMarketSel.value = regimeDecayMarkets.includes(prevDecayMarket) ? prevDecayMarket : regimeDecayMarkets[0];
+  }}
+
+  const regimeDecayBucketSel = document.getElementById('research-regime-decay-bucket');
+  const activeDecayMarket = regimeDecayMarketSel.value || regimeDecayMarkets[0] || '';
+  const prevDecayBucket = regimeDecayBucketSel.value || '';
+  const regimeDecayBuckets = [...new Set((researchRegimeDecayRows || [])
+    .filter((r) => !activeDecayMarket || r.market === activeDecayMarket)
+    .map((r) => r.regime_bucket)
+    .filter(Boolean))].sort();
+  regimeDecayBucketSel.innerHTML = regimeDecayBuckets.map((b) => `<option value="${{esc(b)}}">${{esc(b)}}</option>`).join('');
+  if (regimeDecayBuckets.length > 0) {{
+    regimeDecayBucketSel.value = regimeDecayBuckets.includes(prevDecayBucket) ? prevDecayBucket : regimeDecayBuckets[0];
+  }}
+
   document.getElementById('research-scope-label').textContent = text.scope;
   document.getElementById('research-metric-label').textContent = text.metric;
   document.getElementById('research-rolling-horizon-label').textContent = text.horizon_days;
+  document.getElementById('research-quintile-scope-label').textContent = text.scope;
+  document.getElementById('research-quintile-horizon-label').textContent = text.horizon_days;
+  document.getElementById('research-regime-decay-market-label').textContent = text.market;
+  document.getElementById('research-regime-decay-bucket-label').textContent = text.regime_bucket;
 }}
 
 function renderResearchCharts(text) {{
@@ -2104,6 +2283,44 @@ function renderResearchCharts(text) {{
   rollingRoot.innerHTML = rollingSeries.length
     ? lineChartSvg(rollingSeries, 560, 220) + `<div class="sub" style="margin-top:8px;">${{esc(text.horizon_days)}}=${{horizon || '-'}}d</div>`
     : `<div class="sub">rolling_ic.csv / research_report.json</div>`;
+
+  const quintileScope = document.getElementById('research-quintile-scope').value || 'ALL';
+  const quintileHorizon = Number(document.getElementById('research-quintile-horizon').value || 0);
+  const quintileRoot = document.getElementById('research-quintile-chart');
+  const quintileRows = (researchQuintileRows || [])
+    .filter((r) => (r.scope || 'ALL') === quintileScope && Number(r.horizon_days || 0) === quintileHorizon)
+    .sort((a, b) => Number(b.monotonicity_score || 0) - Number(a.monotonicity_score || 0));
+  const bestQuintile = quintileRows[0];
+  quintileRoot.innerHTML = bestQuintile
+    ? ladderChartSvg([
+        Number(bestQuintile.q1_avg_return || 0),
+        Number(bestQuintile.q2_avg_return || 0),
+        Number(bestQuintile.q3_avg_return || 0),
+        Number(bestQuintile.q4_avg_return || 0),
+        Number(bestQuintile.q5_avg_return || 0),
+      ], 560, 220, 'quantile ladder')
+      + `<div class="sub" style="margin-top:8px;">${{esc(bestQuintile.factor)}} | ${{esc(text.scope)}}=${{esc(quintileScope)}} | ${{esc(text.horizon_days)}}=${{quintileHorizon || '-'}}d | ${{esc(text.monotonicity)}}=${{Number(bestQuintile.monotonicity_score || 0).toFixed(3)}} | Q5-Q1=${{fmtSignedPct(Number(bestQuintile.q5_q1_spread || 0))}}</div>`
+    : `<div class="sub">factor_quintiles.csv / research_report.json</div>`;
+
+  const regimeDecayMarket = document.getElementById('research-regime-decay-market').value || '';
+  const regimeDecayBucket = document.getElementById('research-regime-decay-bucket').value || '';
+  const regimeDecayRoot = document.getElementById('research-regime-decay-chart');
+  const regimeDecaySeries = ['momentum', 'mean_reversion', 'low_vol', 'volume', 'composite']
+    .map((factor) => {{
+      const values = (researchRegimeDecayRows || [])
+        .filter((r) => r.market === regimeDecayMarket && r.regime_bucket === regimeDecayBucket && r.factor === factor)
+        .sort((a, b) => Number(a.horizon_days || 0) - Number(b.horizon_days || 0))
+        .map((r) => ({{
+          x: Number(r.horizon_days || 0),
+          y: Number(r.ic || 0),
+        }}));
+      return {{ name: factor, values }};
+    }})
+    .filter((s) => s.values.length > 0);
+  regimeDecayRoot.innerHTML = regimeDecaySeries.length
+    ? lineChartSvg(regimeDecaySeries, 560, 220)
+      + `<div class="sub" style="margin-top:8px;">${{esc(text.market)}}=${{esc(regimeDecayMarket || '-')}} | ${{esc(text.regime_bucket)}}=${{esc(regimeDecayBucket || '-')}}</div>`
+    : `<div class="sub">regime_decay.csv / research_report.json</div>`;
 }}
 
 function renderRegime(text) {{
@@ -2145,6 +2362,8 @@ function renderResearch(text) {{
   const kpis = document.getElementById('research-kpis');
   const decayBody = document.getElementById('research-decay-rows');
   const rollingBody = document.getElementById('research-rolling-rows');
+  const quintileBody = document.getElementById('research-quintile-rows');
+  const regimeDecayBody = document.getElementById('research-regime-decay-rows');
   const folds = researchCardValue('folds');
   const avgSharpe = researchCardValue('avg_test_sharpe');
   const bestDecay = {{
@@ -2157,12 +2376,26 @@ function renderResearch(text) {{
     horizon: researchCardValue('latest_rolling_horizon_days') || '-',
     ic: researchCardValue('latest_rolling_ic') || '-',
   }};
+  const bestMonotonic = {{
+    factor: researchCardValue('best_monotonic_factor') || '-',
+    horizon: researchCardValue('best_monotonic_horizon_days') || '-',
+    score: researchCardValue('best_monotonicity_score') || '-',
+  }};
+  const bestRegimeDecay = {{
+    market: researchCardValue('best_regime_decay_market') || '-',
+    bucket: researchCardValue('best_regime_decay_bucket') || '-',
+    factor: researchCardValue('best_regime_decay_factor') || '-',
+    horizon: researchCardValue('best_regime_decay_horizon_days') || '-',
+    ic: researchCardValue('best_regime_decay_ic') || '-',
+  }};
 
   const cards = [
     {{ k: text.folds, v: folds || '-' }},
     {{ k: text.avg_test_sharpe_short, v: avgSharpe || '-' }},
     {{ k: text.best_decay, v: `${{bestDecay.factor}} | ${{bestDecay.horizon}}d | IC=${{bestDecay.ic}}` }},
     {{ k: text.latest_rolling, v: `${{latestRolling.factor}} | ${{latestRolling.horizon}}d | IC=${{latestRolling.ic}}` }},
+    {{ k: text.best_monotonic, v: `${{bestMonotonic.factor}} | ${{bestMonotonic.horizon}}d | score=${{bestMonotonic.score}}` }},
+    {{ k: text.best_regime_decay, v: `${{bestRegimeDecay.market}} | ${{bestRegimeDecay.bucket}} | ${{bestRegimeDecay.factor}} | ${{bestRegimeDecay.horizon}}d | IC=${{bestRegimeDecay.ic}}` }},
   ];
   kpis.innerHTML = cards.map((it) => (
     `<div class="mini-kpi"><div class="k">${{it.k}}</div><div class="v">${{it.v}}</div></div>`
@@ -2187,10 +2420,36 @@ function renderResearch(text) {{
       `<tr><td>${{r.date}}</td><td>${{r.factor}}</td><td>${{r.horizon_days}}</td><td>${{Number(r.ic || 0).toFixed(4)}}</td></tr>`
     )).join('');
 
+  const activeQuintileScope = document.getElementById('research-quintile-scope').value || 'ALL';
+  const activeQuintileHorizon = Number(document.getElementById('research-quintile-horizon').value || 0);
+  const quintileRows = [...(researchQuintileRows || [])]
+    .filter((r) => (r.scope || 'ALL') === activeQuintileScope && Number(r.horizon_days || 0) === activeQuintileHorizon)
+    .sort((a, b) => Number(b.monotonicity_score || 0) - Number(a.monotonicity_score || 0))
+    .slice(0, 8);
+  quintileBody.innerHTML = quintileRows.length === 0
+    ? `<tr><td colspan="4" class="sub">factor_quintiles.csv / research_report.json</td></tr>`
+    : quintileRows.map((r) => (
+      `<tr><td>${{r.factor}}</td><td>${{r.observations}}</td><td>${{Number(r.monotonicity_score || 0).toFixed(3)}}</td><td>${{fmtSignedPct(Number(r.q5_q1_spread || 0))}}</td></tr>`
+    )).join('');
+
+  const activeRegimeDecayMarket = document.getElementById('research-regime-decay-market').value || '';
+  const activeRegimeDecayBucket = document.getElementById('research-regime-decay-bucket').value || '';
+  const regimeDecayRows = [...(researchRegimeDecayRows || [])]
+    .filter((r) => r.market === activeRegimeDecayMarket && r.regime_bucket === activeRegimeDecayBucket)
+    .sort((a, b) => Number(b.ic || 0) - Number(a.ic || 0))
+    .slice(0, 10);
+  regimeDecayBody.innerHTML = regimeDecayRows.length === 0
+    ? `<tr><td colspan="5" class="sub">regime_decay.csv / research_report.json</td></tr>`
+    : regimeDecayRows.map((r) => (
+      `<tr><td>${{r.factor}}</td><td>${{r.horizon_days}}</td><td>${{r.observations}}</td><td>${{Number(r.ic || 0).toFixed(4)}}</td><td>${{fmtSignedPct(Number(r.long_short_spread || 0))}}</td></tr>`
+    )).join('');
+
   const stats = [
     (folds ? (`${{text.folds}}=${{folds}}`) : ''),
     (`decay=${{(researchDecayRows || []).length}}`),
     (`rolling=${{(researchRollingRows || []).length}}`),
+    (`quintile=${{(researchQuintileRows || []).length}}`),
+    (`regime_decay=${{(researchRegimeDecayRows || []).length}}`),
   ].filter(Boolean);
   document.getElementById('research-stats').textContent = stats.join(' | ');
   renderResearchCharts(text);
@@ -2424,6 +2683,8 @@ function applyLanguage(lang) {{
   document.getElementById('rolling-chart-title').textContent = text.rolling_ic;
   document.getElementById('rolling-title').textContent = text.rolling_ic;
   document.getElementById('regime-title').textContent = text.regime_split;
+  document.getElementById('quantile-title').textContent = text.quantile_ladder;
+  document.getElementById('regime-decay-title').textContent = text.regime_conditional_decay;
   document.getElementById('regime-market-label').textContent = text.market;
   document.getElementById('research-decay-factor').textContent = text.factors;
   document.getElementById('research-decay-scope-th').textContent = text.scope;
@@ -2438,6 +2699,15 @@ function applyLanguage(lang) {{
   document.getElementById('research-regime-obs').textContent = text.observations;
   document.getElementById('research-regime-composite').textContent = text.composite_alpha;
   document.getElementById('research-regime-momentum').textContent = text.factors;
+  document.getElementById('research-quintile-factor').textContent = text.factors;
+  document.getElementById('research-quintile-obs').textContent = text.observations;
+  document.getElementById('research-quintile-monotonicity').textContent = text.monotonicity;
+  document.getElementById('research-quintile-spread').textContent = text.spread;
+  document.getElementById('research-regime-decay-factor').textContent = text.factors;
+  document.getElementById('research-regime-decay-horizon').textContent = text.horizon_days;
+  document.getElementById('research-regime-decay-obs').textContent = text.observations;
+  document.getElementById('research-regime-decay-ic').textContent = text.ic_short;
+  document.getElementById('research-regime-decay-spread').textContent = text.spread;
   const metricIcOpt = document.querySelector('#research-decay-metric option[value="ic"]');
   const metricSpreadOpt = document.querySelector('#research-decay-metric option[value="long_short_spread"]');
   if (metricIcOpt) metricIcOpt.textContent = text.ic_short;
@@ -2589,6 +2859,8 @@ async function refreshFromFiles() {{
         researchRegimeRows = obj.regime_rows || [];
         researchDecayRows = obj.factor_decay_rows || [];
         researchRollingRows = obj.rolling_ic_rows || [];
+        researchQuintileRows = obj.factor_quintile_rows || [];
+        researchRegimeDecayRows = obj.regime_decay_rows || [];
       }} catch (e) {{}}
     }}
     if (dqResp || dq2Resp) {{
@@ -2714,6 +2986,10 @@ document.getElementById('research-decay-scope').addEventListener('change', () =>
 document.getElementById('research-decay-metric').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
 document.getElementById('research-rolling-horizon-select').addEventListener('change', () => renderResearchCharts(getText(langSwitch.value)));
 document.getElementById('research-regime-market').addEventListener('change', () => renderRegime(getText(langSwitch.value)));
+document.getElementById('research-quintile-scope').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
+document.getElementById('research-quintile-horizon').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
+document.getElementById('research-regime-decay-market').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
+document.getElementById('research-regime-decay-bucket').addEventListener('change', () => renderResearch(getText(langSwitch.value)));
 document.getElementById('strategy-market-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-plugin-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
 document.getElementById('strategy-command-select').addEventListener('change', () => renderStrategyComparison(getText(langSwitch.value)));
@@ -2800,6 +3076,8 @@ refreshFromFiles();
         decay_overview = text.decay_overview,
         rolling_ic = text.rolling_ic,
         regime_split = text.regime_split,
+        quantile_ladder = text.quantile_ladder,
+        regime_conditional_decay = text.regime_conditional_decay,
         horizon_days = text.horizon_days,
         ic_short = text.ic_short,
         spread = text.spread,
@@ -2808,6 +3086,7 @@ refreshFromFiles();
         observations = text.observations,
         composite_alpha = text.composite_alpha,
         regime_bucket = text.regime_bucket,
+        monotonicity = text.monotonicity,
         summary_html = summary_html,
         research_summary_html = research_summary_html,
         audit_html = audit_html,
@@ -2823,11 +3102,14 @@ refreshFromFiles();
         research_regime_json = research_regime_json,
         research_decay_json = research_decay_json,
         research_rolling_json = research_rolling_json,
+        research_quintile_json = research_quintile_json,
+        research_regime_decay_json = research_regime_decay_json,
         data_quality_json = data_quality_json,
         audit_markets_json = audit_markets_json,
         audit_config_sha_json = audit_config_sha_json,
         recent_compare_json = recent_compare_json,
         registry_refresh_path_json = registry_refresh_path_json,
+        leaderboard_refresh_path_json = leaderboard_refresh_path_json,
         i18n_json = i18n_json,
         default_lang_json = default_lang_json,
     );
@@ -3725,15 +4007,19 @@ fn read_research_report(
     Vec<RegimeSplitRowUi>,
     Vec<FactorDecayRowUi>,
     Vec<RollingIcRowUi>,
+    Vec<FactorQuintileRowUi>,
+    Vec<RegimeDecayRowUi>,
 ) {
     let Ok(s) = fs::read_to_string(path) else {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     };
     let report: ResearchReportCompat = serde_json::from_str(&s).unwrap_or_default();
     (
         report.regime_rows,
         report.factor_decay_rows,
         report.rolling_ic_rows,
+        report.factor_quintile_rows,
+        report.regime_decay_rows,
     )
 }
 
@@ -3857,7 +4143,7 @@ mod tests {
         .expect("write equity");
         fs::write(
             output_dir.join("research_report_summary.txt"),
-            "folds=3\navg_test_sharpe=1.2345\nbest_decay_factor=momentum\nbest_decay_horizon_days=5\nbest_decay_ic=0.2222\nlatest_rolling_factor=volume\nlatest_rolling_horizon_days=3\nlatest_rolling_ic=0.1111\n",
+            "folds=3\navg_test_sharpe=1.2345\nbest_decay_factor=momentum\nbest_decay_horizon_days=5\nbest_decay_ic=0.2222\nlatest_rolling_factor=volume\nlatest_rolling_horizon_days=3\nlatest_rolling_ic=0.1111\nbest_monotonic_factor=momentum\nbest_monotonic_horizon_days=5\nbest_monotonicity_score=0.9500\nbest_regime_decay_market=US\nbest_regime_decay_bucket=trend_up_low_vol\nbest_regime_decay_factor=composite\nbest_regime_decay_horizon_days=5\nbest_regime_decay_ic=0.1800\n",
         )
         .expect("write research summary");
         fs::write(
@@ -3871,6 +4157,12 @@ mod tests {
   ],
   "rolling_ic_rows":[
     {"date":"2026-01-02","factor":"volume","horizon_days":3,"observations":9,"ic":0.1111}
+  ],
+  "factor_quintile_rows":[
+    {"scope":"ALL","factor":"momentum","horizon_days":5,"observations":10,"q1_avg_return":-0.01,"q2_avg_return":-0.002,"q3_avg_return":0.001,"q4_avg_return":0.006,"q5_avg_return":0.014,"monotonicity_score":0.95,"q5_q1_spread":0.024}
+  ],
+  "regime_decay_rows":[
+    {"market":"US","regime_bucket":"trend_up_low_vol","factor":"composite","horizon_days":5,"observations":8,"ic":0.18,"long_short_spread":0.03}
   ]
 }"#,
         )
@@ -3951,9 +4243,15 @@ mod tests {
         assert!(html.contains("Candidate Wins"));
         assert!(html.contains("momentum"));
         assert!(html.contains("researchRollingRows"));
+        assert!(html.contains("researchQuintileRows"));
+        assert!(html.contains("researchRegimeDecayRows"));
         assert!(html.contains("research-decay-chart"));
         assert!(html.contains("research-rolling-chart"));
         assert!(html.contains("research-regime-cards"));
+        assert!(html.contains("research-quintile-chart"));
+        assert!(html.contains("research-regime-decay-chart"));
+        assert!(html.contains("best_monotonic_factor"));
+        assert!(html.contains("trend_up_low_vol"));
         assert!(html.contains("trend_up_low_vol"));
         assert!(html.contains("my_alpha"));
         assert!(share_html.contains("dashboard_share.html"));
