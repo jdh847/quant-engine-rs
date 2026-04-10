@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::{
     config::{BotConfig, IbkrConfig, MarketExecutionCost},
     model::{Order, Position, PriceKey, PriceMap, Side, Trade},
-    safety::ensure_network_allowed,
+    safety::{ensure_network_allowed, is_trading_kill_switch_armed},
 };
 
 pub trait ExecutionAdapter {
@@ -26,6 +26,7 @@ pub trait ExecutionAdapter {
     fn equity(&self, prices: &PriceMap) -> f64;
     fn gross_exposure(&self, prices: &PriceMap) -> f64;
     fn net_exposure(&self, prices: &PriceMap) -> f64;
+    fn reconcile_day(&mut self, date: NaiveDate);
     fn end_of_day(&mut self, date: NaiveDate);
 }
 
@@ -91,6 +92,13 @@ impl ExecutionAdapter for BrokerAdapter {
         match self {
             BrokerAdapter::Sim(inner) => inner.net_exposure(prices),
             BrokerAdapter::IbkrPaper(inner) => inner.sim.net_exposure(prices),
+        }
+    }
+
+    fn reconcile_day(&mut self, date: NaiveDate) {
+        match self {
+            BrokerAdapter::Sim(inner) => inner.reconcile_day(date),
+            BrokerAdapter::IbkrPaper(inner) => inner.reconcile_day(date),
         }
     }
 
@@ -273,6 +281,9 @@ impl PaperBroker {
     }
 
     pub fn execute_orders(&mut self, orders: &[Order], prices: &PriceMap) -> Vec<Trade> {
+        if is_trading_kill_switch_armed() {
+            return Vec::new();
+        }
         let mut trades = Vec::new();
 
         for order in orders {
@@ -393,6 +404,8 @@ impl PaperBroker {
     pub fn end_of_day(&mut self, date: NaiveDate) {
         self.current_day = Some(date);
     }
+
+    pub fn reconcile_day(&mut self, _date: NaiveDate) {}
 }
 
 impl ExecutionAdapter for PaperBroker {
@@ -426,6 +439,10 @@ impl ExecutionAdapter for PaperBroker {
 
     fn net_exposure(&self, prices: &PriceMap) -> f64 {
         PaperBroker::net_exposure(self, prices)
+    }
+
+    fn reconcile_day(&mut self, date: NaiveDate) {
+        PaperBroker::reconcile_day(self, date);
     }
 
     fn end_of_day(&mut self, date: NaiveDate) {
@@ -476,6 +493,9 @@ impl IbkrPaperAdapter {
     }
 
     fn execute_orders(&mut self, orders: &[Order], prices: &PriceMap) -> Vec<Trade> {
+        if is_trading_kill_switch_armed() {
+            return Vec::new();
+        }
         for order in orders {
             self.register_and_submit(order.clone());
         }
@@ -485,19 +505,28 @@ impl IbkrPaperAdapter {
             self.apply_fill(fill);
             let _ = self.write_mirror_record(fill);
         }
-
-        if self.cfg.auto_reconcile {
-            let _ = self.reconcile_with_ibkr();
-        }
+        let _ = self.write_lifecycle_summary(
+            orders
+                .first()
+                .map(|o| o.date)
+                .or_else(|| self.sim.current_day)
+                .unwrap_or_else(|| NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid")),
+            "post_execute",
+        );
 
         fills
     }
 
     fn end_of_day(&mut self, date: NaiveDate) {
         self.sim.end_of_day(date);
+        if self.cfg.auto_reconcile {
+            let _ = self.reconcile_with_ibkr();
+            let _ = self.write_lifecycle_summary(date, "reconcile");
+        }
         if self.cfg.auto_cancel_stale {
             let _ = self.cancel_stale_orders(date);
         }
+        let _ = self.write_lifecycle_summary(date, "end_of_day");
     }
 
     fn register_and_submit(&mut self, order: Order) {
@@ -818,6 +847,63 @@ impl IbkrPaperAdapter {
         writeln!(file, "{}", line)?;
         Ok(())
     }
+
+    fn write_lifecycle_summary(&self, date: NaiveDate, event: &str) -> Result<()> {
+        let mut created = 0usize;
+        let mut submitted = 0usize;
+        let mut acknowledged = 0usize;
+        let mut partial = 0usize;
+        let mut filled = 0usize;
+        let mut canceled = 0usize;
+        let mut rejected = 0usize;
+        let mut reconciled = 0usize;
+        let mut open = 0usize;
+        for tracked in self.tracked.values() {
+            match tracked.status {
+                IbkrOrderStatus::Created => created += 1,
+                IbkrOrderStatus::Submitted => submitted += 1,
+                IbkrOrderStatus::Acknowledged => acknowledged += 1,
+                IbkrOrderStatus::PartiallyFilled => partial += 1,
+                IbkrOrderStatus::Filled => filled += 1,
+                IbkrOrderStatus::Canceled => canceled += 1,
+                IbkrOrderStatus::Rejected => rejected += 1,
+                IbkrOrderStatus::Reconciled => reconciled += 1,
+            }
+            if matches!(
+                tracked.status,
+                IbkrOrderStatus::Created
+                    | IbkrOrderStatus::Submitted
+                    | IbkrOrderStatus::Acknowledged
+                    | IbkrOrderStatus::PartiallyFilled
+                    | IbkrOrderStatus::Reconciled
+            ) && tracked.remaining_qty > 0
+            {
+                open += 1;
+            }
+        }
+        let payload = IbkrLifecycleSummary {
+            date: date.format("%Y-%m-%d").to_string(),
+            event: event.to_string(),
+            tracked_orders: self.tracked.len(),
+            created,
+            submitted,
+            acknowledged,
+            partial,
+            filled,
+            canceled,
+            rejected,
+            reconciled,
+            open,
+        };
+        let line = serde_json::to_string(&payload)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.cfg.lifecycle_log)
+            .with_context(|| format!("open lifecycle log failed: {}", self.cfg.lifecycle_log))?;
+        writeln!(file, "{}", line)?;
+        Ok(())
+    }
 }
 
 impl ExecutionAdapter for IbkrPaperAdapter {
@@ -851,6 +937,13 @@ impl ExecutionAdapter for IbkrPaperAdapter {
 
     fn net_exposure(&self, prices: &PriceMap) -> f64 {
         self.sim.net_exposure(prices)
+    }
+
+    fn reconcile_day(&mut self, date: NaiveDate) {
+        if self.cfg.auto_reconcile {
+            let _ = self.reconcile_with_ibkr();
+            let _ = self.write_lifecycle_summary(date, "reconcile");
+        }
     }
 
     fn end_of_day(&mut self, date: NaiveDate) {
@@ -928,6 +1021,22 @@ struct IbkrLifecycleEvent {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct IbkrLifecycleSummary {
+    date: String,
+    event: String,
+    tracked_orders: usize,
+    created: usize,
+    submitted: usize,
+    acknowledged: usize,
+    partial: usize,
+    filled: usize,
+    canceled: usize,
+    rejected: usize,
+    reconciled: usize,
+    open: usize,
+}
+
 fn extract_first_order_id(value: &Value) -> Option<String> {
     extract_all_order_ids(value).into_iter().next()
 }
@@ -981,7 +1090,7 @@ mod tests {
 
     use crate::{config::IbkrConfig, model::PriceMap};
 
-    use super::{IbkrPaperAdapter, Order, PaperBroker, Side};
+    use super::{ExecutionAdapter, IbkrPaperAdapter, Order, PaperBroker, Side};
 
     #[test]
     fn foreign_market_positions_are_marked_in_base_currency() {
@@ -1033,11 +1142,15 @@ mod tests {
 
         let fills = adapter.execute_orders(&[order], &prices);
         assert_eq!(fills.len(), 1);
+        adapter.reconcile_day(date);
 
         let lifecycle = fs::read_to_string(lifecycle_log).expect("read lifecycle");
         let mirror = fs::read_to_string(mirror_log).expect("read mirror");
         assert!(lifecycle.contains("\"event\":\"ack\""));
         assert!(lifecycle.contains("\"event\":\"filled\""));
+        assert!(lifecycle.contains("\"event\":\"post_execute\""));
+        assert!(lifecycle.contains("\"event\":\"reconcile\""));
+        assert!(lifecycle.contains("\"tracked_orders\":1"));
         assert!(mirror.contains("\"symbol\":\"AAPL\""));
     }
 
@@ -1071,7 +1184,268 @@ mod tests {
         adapter.end_of_day(d2);
 
         let lifecycle = fs::read_to_string(lifecycle_log).expect("read lifecycle");
+        assert!(lifecycle.contains("\"event\":\"reconcile\""));
         assert!(lifecycle.contains("\"event\":\"canceled\""));
+        assert!(lifecycle.contains("\"event\":\"end_of_day\""));
+    }
+
+    // ── Buy skipped when insufficient cash ──────────────────────
+    #[test]
+    fn buy_skipped_when_cash_insufficient() {
+        let mut broker = PaperBroker::new(500.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let fills = broker.execute_orders(&[order], &prices);
+        assert!(fills.is_empty(), "should not fill when cash < notional");
+        assert!((broker.cash - 500.0).abs() < 1e-9, "cash unchanged");
+        assert_eq!(broker.position_qty("US", "AAPL"), 0);
+    }
+
+    // ── Sell clamped to available position ────────────────────
+    #[test]
+    fn sell_clamped_to_available_position() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        // buy 5
+        let buy = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 5,
+        };
+        broker.execute_orders(&[buy], &prices);
+
+        // try to sell 10, should only sell 5
+        let sell = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Sell,
+            qty: 10,
+        };
+        let fills = broker.execute_orders(&[sell], &prices);
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].qty, 5, "sell clamped to held qty");
+        assert_eq!(broker.position_qty("US", "AAPL"), 0);
+    }
+
+    // ── Sell with zero position is a no-op ────────────────────
+    #[test]
+    fn sell_with_no_position_is_noop() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let sell = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Sell,
+            qty: 10,
+        };
+        let fills = broker.execute_orders(&[sell], &prices);
+        assert!(fills.is_empty());
+    }
+
+    // ── Position avg_price resets to 0 when fully sold ────────
+    #[test]
+    fn position_avg_price_resets_on_full_sell() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let buy = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        broker.execute_orders(&[buy], &prices);
+        assert_eq!(broker.position_qty("US", "AAPL"), 10);
+
+        let sell = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Sell,
+            qty: 10,
+        };
+        broker.execute_orders(&[sell], &prices);
+        assert_eq!(broker.position_qty("US", "AAPL"), 0);
+
+        // equity should be original minus round-trip friction (none here)
+        let eq = broker.equity(&prices);
+        assert!((eq - 100_000.0).abs() < 1e-9);
+    }
+
+    // ── T+1 sellable_qty blocks same-day sells ────────────────
+    #[test]
+    fn t_plus_one_blocks_same_day_sell() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let d1 = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let d2 = NaiveDate::from_ymd_opt(2025, 1, 13).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("A".to_string(), "600519".to_string()), 100.0);
+
+        let buy = Order {
+            date: d1,
+            market: "A".to_string(),
+            symbol: "600519".to_string(),
+            side: Side::Buy,
+            qty: 100,
+        };
+        broker.execute_orders(&[buy], &prices);
+
+        // same day, T+1: nothing sellable
+        assert_eq!(broker.sellable_qty(d1, "A", "600519", true), 0);
+        // same day, non-T+1: all sellable
+        assert_eq!(broker.sellable_qty(d1, "A", "600519", false), 100);
+        // next day, T+1: all sellable
+        assert_eq!(broker.sellable_qty(d2, "A", "600519", true), 100);
+    }
+
+    // ── Multi-market FX accounting ────────────────────────────
+    #[test]
+    fn multi_market_fx_accounting_is_coherent() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0).with_market_fx_to_base(
+            HashMap::from([("JP".to_string(), 0.007), ("A".to_string(), 0.14)]),
+        );
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("JP".to_string(), "7203".to_string()), 2_500.0); // ¥2500
+        prices.insert(("A".to_string(), "600519".to_string()), 1_800.0); // ¥1800
+        prices.insert(("US".to_string(), "AAPL".to_string()), 200.0);
+
+        let orders = vec![
+            Order {
+                date,
+                market: "JP".to_string(),
+                symbol: "7203".to_string(),
+                side: Side::Buy,
+                qty: 100,
+            },
+            Order {
+                date,
+                market: "A".to_string(),
+                symbol: "600519".to_string(),
+                side: Side::Buy,
+                qty: 10,
+            },
+            Order {
+                date,
+                market: "US".to_string(),
+                symbol: "AAPL".to_string(),
+                side: Side::Buy,
+                qty: 5,
+            },
+        ];
+        let fills = broker.execute_orders(&orders, &prices);
+        assert_eq!(fills.len(), 3);
+
+        // JP: 100 * 2500 * 0.007 = $1,750
+        // A:  10 * 1800 * 0.14  = $2,520
+        // US: 5 * 200 * 1.0     = $1,000
+        let expected_exposure = 1_750.0 + 2_520.0 + 1_000.0;
+        let gross = broker.gross_exposure(&prices);
+        assert!(
+            (gross - expected_exposure).abs() < 1.0,
+            "gross={gross}, expected={expected_exposure}"
+        );
+
+        // equity should be cash + net_exposure
+        let eq = broker.equity(&prices);
+        assert!(
+            (eq - (broker.cash + broker.net_exposure(&prices))).abs() < 1e-9,
+            "equity = cash + net"
+        );
+    }
+
+    // ── Kill switch blocks all execution ──────────────────────
+    #[test]
+    fn kill_switch_blocks_execution() {
+        std::env::set_var("PQBOT_KILL_SWITCH", "1");
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        let fills = broker.execute_orders(&[order], &prices);
+        assert!(fills.is_empty(), "kill switch should block fills");
+        assert!((broker.cash - 100_000.0).abs() < 1e-9, "cash unchanged");
+        std::env::remove_var("PQBOT_KILL_SWITCH");
+    }
+
+    // ── Fees and slippage deducted correctly ──────────────────
+    #[test]
+    fn fees_and_slippage_affect_cash_correctly() {
+        // 10 bps commission, 5 bps slippage
+        let mut broker = PaperBroker::new(100_000.0, 10.0, 5.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let buy = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 100,
+        };
+        let fills = broker.execute_orders(&[buy], &prices);
+        assert_eq!(fills.len(), 1);
+
+        // fill price = 100 * (1 + 5/10000) = 100.05
+        // notional = 100.05 * 100 = 10_005
+        // fees = 10_005 * 10/10000 = 10.005
+        // total deducted = 10_005 + 10.005 = 10_015.005
+        let expected_cash = 100_000.0 - 10_015.005;
+        assert!(
+            (broker.cash - expected_cash).abs() < 0.01,
+            "cash={}, expected={expected_cash}",
+            broker.cash
+        );
+        assert!(fills[0].fees > 0.0, "fees should be non-zero");
+    }
+
+    // ── Missing price silently skips order ─────────────────────
+    #[test]
+    fn missing_price_skips_order() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let prices = PriceMap::new(); // empty — no prices
+
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        let fills = broker.execute_orders(&[order], &prices);
+        assert!(fills.is_empty());
     }
 
     fn temp_logs() -> (PathBuf, PathBuf) {
@@ -1079,7 +1453,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("private_quant_bot_exec_test_{seed}"));
+        let root = std::env::temp_dir().join(format!("quant_engine_rs_exec_test_{seed}"));
         fs::create_dir_all(&root).expect("create temp dir");
         let mirror = root.join("mirror.jsonl");
         let lifecycle = root.join("lifecycle.jsonl");

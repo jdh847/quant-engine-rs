@@ -371,4 +371,228 @@ mod tests {
         assert_eq!(accepted.len(), 1, "rejected={rejected:?}");
         assert!(rejected.is_empty());
     }
+
+    // ── Daily loss lock: triggers at threshold ────────────────
+    #[test]
+    fn daily_loss_lock_triggers_at_threshold() {
+        let cfg = load_config("config/bot.toml").expect("load cfg");
+        let mut risk_cfg = cfg.risk.clone();
+        risk_cfg.daily_loss_limit_ratio = 0.05; // 5% daily loss limit
+
+        let mut rm =
+            UnifiedRiskManager::new(risk_cfg, &cfg.markets, &cfg.fx, &cfg.start.base_currency);
+        rm.start_day(100_000.0);
+
+        let broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("date");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let buy = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+
+        // equity at 96k → 4% loss → NOT locked
+        let (accepted, rejected) = rm.filter_orders(&[buy.clone()], &broker, &prices, 96_000.0);
+        assert_eq!(accepted.len(), 1, "4% loss should not trigger 5% lock");
+        assert!(rejected.is_empty());
+
+        // equity at 95k → exactly 5% loss → locked
+        let (accepted, rejected) = rm.filter_orders(&[buy.clone()], &broker, &prices, 95_000.0);
+        assert!(accepted.is_empty(), "5% loss should trigger lock");
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].reason.contains("daily loss lock"));
+    }
+
+    // ── Daily loss lock allows sells ──────────────────────────
+    #[test]
+    fn daily_loss_lock_allows_sells() {
+        let cfg = load_config("config/bot.toml").expect("load cfg");
+        let mut risk_cfg = cfg.risk.clone();
+        risk_cfg.daily_loss_limit_ratio = 0.02;
+
+        let mut rm =
+            UnifiedRiskManager::new(risk_cfg, &cfg.markets, &cfg.fx, &cfg.start.base_currency);
+        rm.start_day(100_000.0);
+
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("date");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        // buy first so we have something to sell
+        let buy = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        broker.execute_orders(&[buy], &prices);
+
+        // trigger lock (3% loss > 2% threshold)
+        let sell = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Sell,
+            qty: 5,
+        };
+        let (accepted, rejected) = rm.filter_orders(&[sell], &broker, &prices, 97_000.0);
+        assert_eq!(accepted.len(), 1, "sells should pass through daily lock");
+        assert!(rejected.is_empty());
+    }
+
+    // ── Gross exposure breach ─────────────────────────────────
+    #[test]
+    fn gross_exposure_breach_blocks_order() {
+        let cfg = load_config("config/bot.toml").expect("load cfg");
+        let mut risk_cfg = cfg.risk.clone();
+        risk_cfg.max_gross_exposure_ratio = 0.5; // 50%
+
+        let mut rm =
+            UnifiedRiskManager::new(risk_cfg, &cfg.markets, &cfg.fx, &cfg.start.base_currency);
+        rm.start_day(100_000.0);
+
+        // broker already holds $40k gross
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("date");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 200.0);
+        prices.insert(("US".to_string(), "MSFT".to_string()), 200.0);
+
+        let seed = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 200,
+        };
+        broker.execute_orders(&[seed], &prices); // $40k position
+
+        // try to add $20k more → total $60k > 50% of $100k
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "MSFT".to_string(),
+            side: Side::Buy,
+            qty: 100,
+        };
+        let (accepted, rejected) = rm.filter_orders(&[order], &broker, &prices, 100_000.0);
+        assert!(accepted.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].reason.contains("gross exposure breach"));
+    }
+
+    // ── Symbol weight breach ──────────────────────────────────
+    #[test]
+    fn symbol_weight_breach_blocks_order() {
+        let cfg = load_config("config/bot.toml").expect("load cfg");
+        let mut risk_cfg = cfg.risk.clone();
+        risk_cfg.max_symbol_weight = 0.1; // 10% per symbol
+
+        let mut rm =
+            UnifiedRiskManager::new(risk_cfg, &cfg.markets, &cfg.fx, &cfg.start.base_currency);
+        rm.start_day(100_000.0);
+
+        let broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("date");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 200.0);
+
+        // $20k = 20% > 10% limit
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 100,
+        };
+        let (accepted, rejected) = rm.filter_orders(&[order], &broker, &prices, 100_000.0);
+        assert!(accepted.is_empty());
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].reason.contains("symbol weight breach"));
+    }
+
+    // ── Multiple rejections in one batch ──────────────────────
+    #[test]
+    fn multiple_orders_get_independent_rejections() {
+        let cfg = load_config("config/bot.toml").expect("load cfg");
+        let mut risk_cfg = cfg.risk.clone();
+        risk_cfg.max_symbol_weight = 0.1;
+        risk_cfg
+            .currency_max_net_exposure_ratio
+            .insert("JPY".to_string(), 0.05);
+
+        let mut rm =
+            UnifiedRiskManager::new(risk_cfg, &cfg.markets, &cfg.fx, &cfg.start.base_currency);
+        rm.start_day(100_000.0);
+
+        let broker = PaperBroker::new(100_000.0, 0.0, 0.0)
+            .with_market_fx_to_base(HashMap::from([("JP".to_string(), 0.007)]));
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("date");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 200.0);
+        prices.insert(("JP".to_string(), "7203".to_string()), 2_500.0);
+
+        let orders = vec![
+            // US order: $20k = 20% > 10% symbol limit → rejected
+            Order {
+                date,
+                market: "US".to_string(),
+                symbol: "AAPL".to_string(),
+                side: Side::Buy,
+                qty: 100,
+            },
+            // JP order: 1000 * 2500 * 0.007 = $17.5k > 5% of 100k = $5k → rejected
+            Order {
+                date,
+                market: "JP".to_string(),
+                symbol: "7203".to_string(),
+                side: Side::Buy,
+                qty: 1000,
+            },
+        ];
+        let (accepted, rejected) = rm.filter_orders(&orders, &broker, &prices, 100_000.0);
+        assert!(accepted.is_empty());
+        assert_eq!(rejected.len(), 2, "each order rejected independently");
+    }
+
+    // ── Daily lock resets on new day ──────────────────────────
+    #[test]
+    fn daily_lock_resets_on_new_day() {
+        let cfg = load_config("config/bot.toml").expect("load cfg");
+        let mut risk_cfg = cfg.risk.clone();
+        risk_cfg.daily_loss_limit_ratio = 0.02;
+
+        let mut rm =
+            UnifiedRiskManager::new(risk_cfg, &cfg.markets, &cfg.fx, &cfg.start.base_currency);
+
+        let broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("date");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 100.0);
+
+        let buy = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+
+        // day 1: trigger lock
+        rm.start_day(100_000.0);
+        let (accepted, _) = rm.filter_orders(&[buy.clone()], &broker, &prices, 97_000.0);
+        assert!(accepted.is_empty(), "locked on day 1");
+
+        // day 2: new start_day resets lock
+        rm.start_day(97_000.0);
+        let (accepted, _) = rm.filter_orders(&[buy], &broker, &prices, 97_000.0);
+        assert_eq!(accepted.len(), 1, "lock should reset on new day");
+    }
 }
