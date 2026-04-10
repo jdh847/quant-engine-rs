@@ -22,6 +22,7 @@ pub mod optimize;
 pub mod output;
 pub mod paper_hints;
 pub mod portfolio;
+pub mod reconcile;
 pub mod registry;
 pub mod replay;
 pub mod research;
