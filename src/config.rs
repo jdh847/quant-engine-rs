@@ -230,6 +230,12 @@ pub struct IbkrConfig {
     pub auto_reconcile: bool,
     pub auto_cancel_stale: bool,
     pub allow_remote_paper: bool,
+    #[serde(default = "default_reconcile_log")]
+    pub reconcile_log: String,
+}
+
+fn default_reconcile_log() -> String {
+    "outputs_rust/ibkr_reconcile.jsonl".to_string()
 }
 
 impl Default for IbkrConfig {
@@ -244,6 +250,7 @@ impl Default for IbkrConfig {
             auto_reconcile: true,
             auto_cancel_stale: true,
             allow_remote_paper: false,
+            reconcile_log: default_reconcile_log(),
         }
     }
 }
@@ -263,6 +270,8 @@ pub struct RawMarketConfig {
     pub industry_file: Option<String>,
     #[serde(default)]
     pub holiday_file: Option<String>,
+    #[serde(default)]
+    pub gap_days_threshold: Option<i64>,
     #[serde(default)]
     pub commission_bps: Option<f64>,
     #[serde(default)]
@@ -286,6 +295,7 @@ pub struct MarketConfig {
     pub industry_map: HashMap<String, String>,
     pub holiday_file: Option<PathBuf>,
     pub holiday_dates: HashSet<NaiveDate>,
+    pub gap_days_threshold: Option<i64>,
     pub execution_cost: MarketExecutionCost,
 }
 
@@ -355,8 +365,21 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
             min_fee: market.min_fee.unwrap_or(raw.execution.min_fee),
         };
         validate_market_execution(&name, execution_cost)?;
+        let data_file_path = project_root.join(&market.data_file);
+        if !data_file_path.is_file() {
+            return Err(anyhow!(
+                "markets.{name}.data_file does not exist: {}",
+                data_file_path.display()
+            ));
+        }
         let industry_file_path = market.industry_file.as_ref().map(|p| project_root.join(p));
         let industry_map = if let Some(industry_file) = &industry_file_path {
+            if !industry_file.is_file() {
+                return Err(anyhow!(
+                    "markets.{name}.industry_file does not exist: {}",
+                    industry_file.display()
+                ));
+            }
             load_industry_map(industry_file)
                 .with_context(|| format!("failed loading industry file for market {name}"))?
         } else {
@@ -364,6 +387,12 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
         };
         let holiday_file_path = market.holiday_file.as_ref().map(|p| project_root.join(p));
         let holiday_dates = if let Some(holiday_file) = &holiday_file_path {
+            if !holiday_file.is_file() {
+                return Err(anyhow!(
+                    "markets.{name}.holiday_file does not exist: {}",
+                    holiday_file.display()
+                ));
+            }
             load_holiday_dates(holiday_file)
                 .with_context(|| format!("failed loading holiday file for market {name}"))?
         } else {
@@ -375,7 +404,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
             MarketConfig {
                 name,
                 allocation: market.allocation,
-                data_file: project_root.join(market.data_file),
+                data_file: data_file_path,
                 lot_size: market.lot_size,
                 min_trade_notional: market.min_trade_notional,
                 currency,
@@ -384,6 +413,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
                 industry_map,
                 holiday_file: holiday_file_path,
                 holiday_dates,
+                gap_days_threshold: market.gap_days_threshold,
                 execution_cost,
             },
         );
@@ -736,7 +766,7 @@ mod tests {
 
     #[test]
     fn detect_project_root_falls_back_to_config_parent() {
-        let temp = std::env::temp_dir().join("private_quant_bot_cfg_root_test");
+        let temp = std::env::temp_dir().join("quant_engine_rs_cfg_root_test");
         fs::create_dir_all(&temp).expect("create temp");
         let cfg = temp.join("bot.toml");
         fs::write(&cfg, "").expect("write file");
@@ -744,5 +774,69 @@ mod tests {
         let root = detect_project_root(&abs);
         let temp_canon = fs::canonicalize(temp).expect("canonical temp root");
         assert_eq!(root, temp_canon);
+    }
+
+    #[test]
+    fn load_config_rejects_missing_market_data_files() {
+        let temp = std::env::temp_dir().join("quant_engine_rs_cfg_validate_test");
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).expect("create temp");
+
+        let data_path = temp.join("market.csv");
+        fs::write(
+            &data_path,
+            "date,symbol,close,adj_close,volume\n2025-01-02,AAA,1.0,1.0,10\n",
+        )
+        .expect("write data file");
+
+        let cfg_path = temp.join("bot.toml");
+        fs::write(
+            &cfg_path,
+            format!(
+                r#"
+[start]
+starting_capital = 1000000
+base_currency = "USD"
+
+[strategy]
+strategy_plugin = "layered_multi_factor"
+short_window = 3
+long_window = 7
+vol_window = 5
+top_n = 1
+min_momentum = 0.0
+portfolio_method = "risk_parity"
+
+[risk]
+max_gross_exposure_ratio = 1.0
+max_symbol_weight = 0.2
+daily_loss_limit_ratio = 0.05
+
+[execution]
+commission_bps = 1.0
+slippage_bps = 2.0
+sell_tax_bps = 0.0
+min_fee = 0.0
+
+[broker]
+mode = "sim"
+paper_only = true
+
+[markets.US]
+allocation = 1.0
+data_file = "missing.csv"
+lot_size = 1
+"#
+            ),
+        )
+        .expect("write config file");
+
+        let err = super::load_config(&cfg_path)
+            .expect_err("load_config should reject missing market file");
+        let msg = err.to_string();
+        assert!(msg.contains("markets.US.data_file does not exist"), "{msg}");
+        assert!(msg.contains("missing.csv"), "{msg}");
+        let _ = fs::remove_dir_all(&temp);
+        let _ = data_path;
     }
 }

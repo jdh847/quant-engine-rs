@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::{
     config::{BotConfig, IbkrConfig, MarketExecutionCost},
     model::{Order, Position, PriceKey, PriceMap, Side, Trade},
+    reconcile::{ReconcileReport, ReconcileSnapshot},
     safety::{ensure_network_allowed, is_trading_kill_switch_armed},
 };
 
@@ -227,6 +228,15 @@ impl PaperBroker {
         } else {
             0.0
         }
+    }
+
+    /// All (market, symbol) keys with a non-zero position.
+    pub fn position_keys(&self) -> Vec<(String, String)> {
+        self.positions
+            .iter()
+            .filter(|(_, p)| p.qty != 0)
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     pub fn position_qty(&self, market: &str, symbol: &str) -> i64 {
@@ -457,10 +467,11 @@ pub struct IbkrPaperAdapter {
     client: Option<Client>,
     next_local_order_id: u64,
     tracked: HashMap<u64, IbkrTrackedOrder>,
+    last_prices: PriceMap,
 }
 
 impl IbkrPaperAdapter {
-    fn new(sim: PaperBroker, cfg: IbkrConfig) -> Result<Self> {
+    pub fn new(sim: PaperBroker, cfg: IbkrConfig) -> Result<Self> {
         let client = if cfg.enabled {
             ensure_network_allowed("ibkr_http_client")?;
             Some(
@@ -489,6 +500,7 @@ impl IbkrPaperAdapter {
             client,
             next_local_order_id: 1,
             tracked: HashMap::new(),
+            last_prices: PriceMap::new(),
         })
     }
 
@@ -496,6 +508,7 @@ impl IbkrPaperAdapter {
         if is_trading_kill_switch_armed() {
             return Vec::new();
         }
+        self.last_prices.clone_from(prices);
         for order in orders {
             self.register_and_submit(order.clone());
         }
@@ -526,6 +539,7 @@ impl IbkrPaperAdapter {
         if self.cfg.auto_cancel_stale {
             let _ = self.cancel_stale_orders(date);
         }
+        let _ = self.write_reconcile_report(date);
         let _ = self.write_lifecycle_summary(date, "end_of_day");
     }
 
@@ -904,6 +918,33 @@ impl IbkrPaperAdapter {
         writeln!(file, "{}", line)?;
         Ok(())
     }
+
+    fn write_reconcile_report(&self, date: NaiveDate) -> Result<()> {
+        let symbols = self.sim.position_keys();
+        let expected =
+            ReconcileSnapshot::capture(&self.sim, &self.last_prices, date, "internal", &symbols);
+
+        // In dry_run / offline mode, the "actual" snapshot is also the sim.
+        // When connected to real IBKR, this would come from the broker positions API.
+        let actual = if self.cfg.enabled && !self.cfg.dry_run {
+            // TODO: fetch real positions from IBKR API and build snapshot
+            expected.clone()
+        } else {
+            expected.clone()
+        };
+
+        let report = ReconcileReport::diff(&expected, &actual);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.cfg.reconcile_log)
+            .with_context(|| {
+                format!("open reconcile log failed: {}", self.cfg.reconcile_log)
+            })?;
+        report.write_jsonl(&mut file)?;
+        Ok(())
+    }
+
 }
 
 impl ExecutionAdapter for IbkrPaperAdapter {
@@ -1449,6 +1490,11 @@ mod tests {
     }
 
     fn temp_logs() -> (PathBuf, PathBuf) {
+        let (_, mirror, lifecycle, _) = temp_test_dir();
+        (mirror, lifecycle)
+    }
+
+    fn temp_test_dir() -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
@@ -1457,6 +1503,213 @@ mod tests {
         fs::create_dir_all(&root).expect("create temp dir");
         let mirror = root.join("mirror.jsonl");
         let lifecycle = root.join("lifecycle.jsonl");
-        (mirror, lifecycle)
+        let reconcile = root.join("reconcile.jsonl");
+        (root, mirror, lifecycle, reconcile)
+    }
+
+    // ════════════════════════════════════════════════════════════
+    // IBKR Paper Adapter — single order full lifecycle tests
+    // ════════════════════════════════════════════════════════════
+
+    /// Full single-order lifecycle: buy 10 AAPL, verify every phase.
+    #[test]
+    fn ibkr_single_us_buy_full_lifecycle() {
+        let (_root, mirror_log, lifecycle_log, reconcile_log) = temp_test_dir();
+
+        let cfg = IbkrConfig {
+            enabled: false,
+            dry_run: true,
+            auto_reconcile: true,
+            auto_cancel_stale: true,
+            mirror_log: mirror_log.display().to_string(),
+            lifecycle_log: lifecycle_log.display().to_string(),
+            reconcile_log: reconcile_log.display().to_string(),
+            ..IbkrConfig::default()
+        };
+
+        let sim = PaperBroker::new(100_000.0, 10.0, 5.0);
+        let mut adapter = IbkrPaperAdapter::new(sim, cfg).expect("adapter create");
+
+        let date = NaiveDate::from_ymd_opt(2025, 6, 10).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 200.0);
+
+        // Phase 1: Submit + Execute
+        let order = Order {
+            date,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 10,
+        };
+        let fills = adapter.execute_orders(&[order], &prices);
+
+        assert_eq!(fills.len(), 1, "one fill");
+        assert_eq!(fills[0].symbol, "AAPL");
+        assert_eq!(fills[0].qty, 10);
+        assert!(fills[0].price > 200.0, "buy fill includes slippage");
+        assert!(fills[0].fees > 0.0, "fees charged");
+        assert_eq!(adapter.position_qty("US", "AAPL"), 10);
+        assert!(adapter.cash() < 100_000.0);
+
+        // Verify lifecycle events
+        let lifecycle = fs::read_to_string(&lifecycle_log).expect("read lifecycle");
+        assert!(lifecycle.contains("\"event\":\"created\""));
+        assert!(lifecycle.contains("\"event\":\"ack\""));
+        assert!(lifecycle.contains("\"event\":\"filled\""));
+        assert!(lifecycle.contains("\"event\":\"post_execute\""));
+
+        // Verify mirror log
+        let mirror = fs::read_to_string(&mirror_log).expect("read mirror");
+        assert!(mirror.contains("\"symbol\":\"AAPL\""));
+        assert!(mirror.contains("\"side\":\"BUY\""));
+
+        // Phase 2: Reconcile + End of Day
+        adapter.reconcile_day(date);
+        adapter.end_of_day(date);
+
+        let lifecycle_after = fs::read_to_string(&lifecycle_log).expect("read lifecycle");
+        assert!(lifecycle_after.contains("\"event\":\"reconcile\""));
+        assert!(lifecycle_after.contains("\"event\":\"end_of_day\""));
+
+        // Verify reconcile report was written and is clean
+        let reconcile = fs::read_to_string(&reconcile_log).expect("read reconcile");
+        let report: serde_json::Value =
+            serde_json::from_str(reconcile.trim()).expect("parse reconcile json");
+        assert_eq!(report["clean"], true, "dry_run reconcile should be clean");
+        assert_eq!(report["expected_source"], "internal");
+
+        // Phase 3: Position survives overnight, sell half on day 2
+        let d2 = NaiveDate::from_ymd_opt(2025, 6, 11).expect("valid");
+        assert_eq!(adapter.position_qty("US", "AAPL"), 10);
+
+        let sell = Order {
+            date: d2,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Sell,
+            qty: 5,
+        };
+        let sell_fills = adapter.execute_orders(&[sell], &prices);
+        assert_eq!(sell_fills.len(), 1);
+        assert_eq!(sell_fills[0].qty, 5);
+        assert_eq!(adapter.position_qty("US", "AAPL"), 5);
+
+        adapter.end_of_day(d2);
+
+        // Two reconcile reports (one per end_of_day)
+        let reconcile_final = fs::read_to_string(&reconcile_log).expect("read reconcile");
+        let lines: Vec<&str> = reconcile_final.trim().lines().collect();
+        assert_eq!(lines.len(), 2, "two reconcile reports");
+    }
+
+    /// Order that can't fill still gets lifecycle tracking + stale cancel.
+    #[test]
+    fn ibkr_unfillable_order_gets_tracked_and_canceled() {
+        let (_root, mirror_log, lifecycle_log, reconcile_log) = temp_test_dir();
+
+        let cfg = IbkrConfig {
+            enabled: false,
+            dry_run: true,
+            auto_reconcile: true,
+            auto_cancel_stale: true,
+            mirror_log: mirror_log.display().to_string(),
+            lifecycle_log: lifecycle_log.display().to_string(),
+            reconcile_log: reconcile_log.display().to_string(),
+            ..IbkrConfig::default()
+        };
+
+        let sim = PaperBroker::new(100.0, 0.0, 0.0); // only $100
+        let mut adapter = IbkrPaperAdapter::new(sim, cfg).expect("adapter create");
+
+        let d1 = NaiveDate::from_ymd_opt(2025, 6, 10).expect("valid");
+        let d2 = NaiveDate::from_ymd_opt(2025, 6, 11).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "AAPL".to_string()), 200.0);
+
+        // $20k order with $100 cash → no fill
+        let order = Order {
+            date: d1,
+            market: "US".to_string(),
+            symbol: "AAPL".to_string(),
+            side: Side::Buy,
+            qty: 100,
+        };
+        let fills = adapter.execute_orders(&[order], &prices);
+        assert!(fills.is_empty());
+
+        let lifecycle = fs::read_to_string(&lifecycle_log).expect("read lifecycle");
+        assert!(lifecycle.contains("\"event\":\"created\""));
+        assert!(lifecycle.contains("\"event\":\"ack\""));
+        assert!(!lifecycle.contains("\"event\":\"filled\""));
+
+        // End of day on a later date triggers stale cancel
+        adapter.end_of_day(d2);
+
+        let lifecycle_final = fs::read_to_string(&lifecycle_log).expect("read lifecycle");
+        assert!(lifecycle_final.contains("\"event\":\"canceled\""));
+    }
+
+    /// Multi-day: buy day 1, price changes, sell day 2. Reconcile each day.
+    #[test]
+    fn ibkr_multi_day_buy_sell_with_price_change() {
+        let (_root, mirror_log, lifecycle_log, reconcile_log) = temp_test_dir();
+
+        let cfg = IbkrConfig {
+            enabled: false,
+            dry_run: true,
+            auto_reconcile: true,
+            auto_cancel_stale: true,
+            mirror_log: mirror_log.display().to_string(),
+            lifecycle_log: lifecycle_log.display().to_string(),
+            reconcile_log: reconcile_log.display().to_string(),
+            ..IbkrConfig::default()
+        };
+
+        let sim = PaperBroker::new(50_000.0, 0.0, 0.0);
+        let mut adapter = IbkrPaperAdapter::new(sim, cfg).expect("adapter create");
+
+        let d1 = NaiveDate::from_ymd_opt(2025, 6, 10).expect("valid");
+        let d2 = NaiveDate::from_ymd_opt(2025, 6, 11).expect("valid");
+        let mut prices = PriceMap::new();
+        prices.insert(("US".to_string(), "MSFT".to_string()), 400.0);
+
+        // Day 1: buy 20 MSFT
+        let buy = Order {
+            date: d1,
+            market: "US".to_string(),
+            symbol: "MSFT".to_string(),
+            side: Side::Buy,
+            qty: 20,
+        };
+        adapter.execute_orders(&[buy], &prices);
+        adapter.end_of_day(d1);
+
+        let cash_after_buy = adapter.cash();
+        assert_eq!(adapter.position_qty("US", "MSFT"), 20);
+
+        // Day 2: price up, sell all
+        prices.insert(("US".to_string(), "MSFT".to_string()), 420.0);
+        let sell = Order {
+            date: d2,
+            market: "US".to_string(),
+            symbol: "MSFT".to_string(),
+            side: Side::Sell,
+            qty: 20,
+        };
+        adapter.execute_orders(&[sell], &prices);
+        assert_eq!(adapter.position_qty("US", "MSFT"), 0);
+        assert!(adapter.cash() > cash_after_buy, "profit from price increase");
+
+        adapter.end_of_day(d2);
+
+        // Two reconcile reports, both clean
+        let reconcile = fs::read_to_string(&reconcile_log).expect("read reconcile");
+        let lines: Vec<&str> = reconcile.trim().lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            let report: serde_json::Value = serde_json::from_str(line).expect("parse");
+            assert_eq!(report["clean"], true);
+        }
     }
 }
