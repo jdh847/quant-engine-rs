@@ -525,4 +525,169 @@ mod tests {
             );
         }
     }
+
+    // ════════════════════════════════════════════════════════════
+    // Step 4: Minimal strategy loop — US only, IbkrPaperAdapter
+    //         dry_run, full engine run, daily reconcile
+    // ════════════════════════════════════════════════════════════
+
+    /// Run the full engine loop on the bundled US data through IbkrPaperAdapter
+    /// in dry_run mode. Verify trades, equity curve, lifecycle, and daily
+    /// reconcile reports.
+    ///
+    /// NOTE: `#[ignore]` because this test loads the full US dataset (6k+ rows)
+    /// and runs the full engine pipeline, which is too heavy for default CI.
+    /// Run manually with:
+    ///     cargo test --lib engine::tests::minimal_strategy_loop -- --ignored
+    #[test]
+    #[ignore]
+    fn minimal_strategy_loop_us_ibkr_paper_dry_run() {
+        use std::collections::HashMap;
+        use std::fs;
+
+        use crate::config::IbkrConfig;
+        use crate::execution::{IbkrPaperAdapter, PaperBroker};
+        use crate::risk::UnifiedRiskManager;
+        use crate::strategy::build_strategy;
+
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("quant_engine_min_loop_{seed}"));
+        fs::create_dir_all(&root).expect("create temp dir");
+
+        let mut cfg = load_config("config/bot.toml").expect("config should load");
+
+        // ── Strip to US only ──────────────────────────────────
+        cfg.markets.retain(|name, _| name == "US");
+        cfg.markets.get_mut("US").unwrap().allocation = 1.0;
+
+        let ibkr_cfg = IbkrConfig {
+            enabled: false,
+            dry_run: true,
+            auto_reconcile: true,
+            auto_cancel_stale: true,
+            mirror_log: root.join("mirror.jsonl").display().to_string(),
+            lifecycle_log: root.join("lifecycle.jsonl").display().to_string(),
+            reconcile_log: root.join("reconcile.jsonl").display().to_string(),
+            ..IbkrConfig::default()
+        };
+
+        let data = CsvDataPortal::new(
+            cfg.markets
+                .values()
+                .map(|m| (m.name.clone(), m.data_file.clone()))
+                .collect(),
+        )
+        .expect("csv should load");
+
+        let trading_days = data.trading_dates().len();
+        assert!(trading_days > 10, "need enough data to be meaningful");
+
+        // ── Build IbkrPaperAdapter directly (skip config validation) ──
+        let market_costs = cfg
+            .markets
+            .iter()
+            .map(|(name, market)| (name.clone(), market.execution_cost))
+            .collect();
+        let market_fx_to_base: HashMap<String, f64> = cfg
+            .markets
+            .iter()
+            .map(|(name, market)| (name.clone(), market.fx_to_base))
+            .collect();
+        let sim = PaperBroker::new(
+            cfg.start.starting_capital,
+            cfg.execution.commission_bps,
+            cfg.execution.slippage_bps,
+        )
+        .with_market_fx_to_base(market_fx_to_base)
+        .with_market_costs(market_costs, cfg.execution.sell_tax_bps, cfg.execution.min_fee);
+
+        let broker = IbkrPaperAdapter::new(sim, ibkr_cfg).expect("adapter create");
+
+        let industries: HashMap<(String, String), String> = cfg
+            .markets
+            .iter()
+            .flat_map(|(market_name, market_cfg)| {
+                market_cfg
+                    .industry_map
+                    .iter()
+                    .map(move |(symbol, industry)| {
+                        ((market_name.clone(), symbol.clone()), industry.clone())
+                    })
+            })
+            .collect();
+
+        let strategy_cfg = market_strategy_config(&cfg, "US");
+        let mut market_strategies: HashMap<String, Box<dyn crate::strategy::StrategyPlugin>> =
+            HashMap::new();
+        market_strategies.insert(
+            "US".to_string(),
+            build_strategy(strategy_cfg, industries),
+        );
+
+        let risk = UnifiedRiskManager::new(
+            cfg.risk.clone(),
+            &cfg.markets,
+            &cfg.fx,
+            &cfg.start.base_currency,
+        );
+        let rules = super::market_rules_from_config(&cfg);
+
+        let engine = QuantBotEngine::new(cfg.clone(), data, market_strategies, risk, rules, broker);
+        let result = engine.run();
+
+        // ── Verify equity curve ───────────────────────────────
+        assert_eq!(
+            result.equity_curve.len(),
+            trading_days,
+            "one equity point per trading day"
+        );
+        for point in &result.equity_curve {
+            assert!(point.equity > 0.0);
+        }
+
+        // ── Verify trades happened ────────────────────────────
+        assert!(
+            !result.trades.is_empty(),
+            "US-only run should produce trades (got {} equity points, {} rejections)",
+            result.equity_curve.len(),
+            result.rejections.len()
+        );
+        for trade in &result.trades {
+            assert_eq!(trade.market, "US");
+        }
+
+        // ── Verify lifecycle JSONL ────────────────────────────
+        let lifecycle = fs::read_to_string(root.join("lifecycle.jsonl")).expect("read lifecycle");
+        assert!(lifecycle.contains("\"event\":\"created\""));
+        assert!(lifecycle.contains("\"event\":\"filled\""));
+        assert!(lifecycle.contains("\"event\":\"end_of_day\""));
+
+        // ── Verify reconcile: one report per trading day ──────
+        let reconcile = fs::read_to_string(root.join("reconcile.jsonl")).expect("read reconcile");
+        let reconcile_lines: Vec<&str> = reconcile.trim().lines().collect();
+        assert_eq!(
+            reconcile_lines.len(),
+            trading_days,
+            "one reconcile report per trading day: got {}, expected {}",
+            reconcile_lines.len(),
+            trading_days
+        );
+
+        // All should be clean in dry_run
+        for (i, line) in reconcile_lines.iter().enumerate() {
+            let report: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("parse reconcile line {i}: {e}"));
+            assert_eq!(
+                report["clean"], true,
+                "reconcile day {i} should be clean in dry_run"
+            );
+        }
+
+        // ── Verify mirror log has entries ─────────────────────
+        let mirror = fs::read_to_string(root.join("mirror.jsonl")).expect("read mirror");
+        assert!(!mirror.is_empty(), "mirror log should have trade records");
+    }
 }
