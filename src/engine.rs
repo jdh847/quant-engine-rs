@@ -561,7 +561,12 @@ mod tests {
 
         // ── Strip to US only ──────────────────────────────────
         cfg.markets.retain(|name, _| name == "US");
-        cfg.markets.get_mut("US").unwrap().allocation = 1.0;
+        // Keep within default risk caps:
+        // - USD exposure cap defaults to 0.90
+        // - max_gross_exposure_ratio defaults to 0.95
+        // - max_symbol_weight defaults to 0.30 (so top_n must be > 1)
+        cfg.markets.get_mut("US").unwrap().allocation = 0.90;
+        cfg.strategy.top_n = cfg.strategy.top_n.max(5);
 
         let ibkr_cfg = IbkrConfig {
             enabled: false,
