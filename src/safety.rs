@@ -27,3 +27,11 @@ pub fn ensure_ibkr_paper_allowed() -> Result<()> {
         "ibkr_paper is disabled by default; set PQBOT_ALLOW_IBKR_PAPER=1 to enable paper IBKR adapter"
     ))
 }
+
+/// Hard stop for execution.
+///
+/// When this is armed (`PQBOT_KILL_SWITCH=1|true|yes|on`), the engine should
+/// refuse to execute orders (and surface rejections) regardless of strategy.
+pub fn is_trading_kill_switch_armed() -> bool {
+    env_truthy("PQBOT_KILL_SWITCH")
+}
