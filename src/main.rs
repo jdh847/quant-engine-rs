@@ -291,6 +291,20 @@ enum Command {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Compute factor Information Coefficient (IC) over the bundled dataset.
+    ///
+    /// Diagnostic: tells you which factors actually predict next-period
+    /// returns. Output is JSONL (one report per factor) plus a stdout
+    /// summary table.
+    FactorIc {
+        #[arg(long, default_value = "config/bot.toml")]
+        config: String,
+        #[arg(long, default_value = "outputs_rust/factor_ic.jsonl")]
+        output_path: String,
+        /// Restrict to a single market (e.g. US). Empty = all markets.
+        #[arg(long, default_value = "")]
+        market: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -517,7 +531,95 @@ fn main() -> Result<()> {
             output_dir,
             force,
         } => bundle_extract_command(&bundle_path, &output_dir, force),
+        Command::FactorIc {
+            config,
+            output_path,
+            market,
+        } => factor_ic_command(&config, &output_path, &market),
     }
+}
+
+fn factor_ic_command(config_path: &str, output_path: &str, market_filter: &str) -> Result<()> {
+    use private_quant_bot::{
+        factor_extract::{extract_factor_timeline, FactorWindows},
+        factor_ic::compute_factor_ics,
+        model::Bar,
+    };
+    use std::collections::BTreeMap;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+
+    let cfg = load_config(config_path)?;
+    let data = load_data_for_config(&cfg)?;
+
+    // Collect bars (filtered by market if requested).
+    let mut bars: Vec<Bar> = Vec::new();
+    let dates = data.trading_dates();
+    for date in &dates {
+        for (market_name, _market_cfg) in &cfg.markets {
+            if !market_filter.is_empty() && market_name != market_filter {
+                continue;
+            }
+            let day_bars = data.bars_for(*date, market_name);
+            bars.extend(day_bars.into_iter());
+        }
+    }
+    if bars.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no bars loaded (market filter: '{}')",
+            market_filter
+        ));
+    }
+
+    // Use strategy's window settings for factor extraction.
+    let windows = FactorWindows {
+        long_window: cfg.strategy.long_window,
+        vol_window: cfg.strategy.vol_window,
+        mean_reversion_window: cfg.strategy.mean_reversion_window,
+        volume_window: cfg.strategy.volume_window,
+    };
+
+    let timeline = extract_factor_timeline(&bars, &windows);
+    let reports = compute_factor_ics(&timeline);
+
+    // Ensure output directory exists.
+    if let Some(parent) = std::path::Path::new(output_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(output_path)?;
+    for report in &reports {
+        let line = serde_json::to_string(report)?;
+        writeln!(file, "{}", line)?;
+    }
+
+    // Print summary table to stdout.
+    println!("Factor IC report ({} factors, {} snapshots, market='{}')",
+        reports.len(),
+        timeline.len(),
+        if market_filter.is_empty() { "ALL" } else { market_filter }
+    );
+    println!(
+        "  {:<18} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
+        "factor", "mean_ic", "std_ic", "ic_ir", "t_stat", "n_days", "pos_rt"
+    );
+    let mut sorted: BTreeMap<String, &_> = BTreeMap::new();
+    for r in &reports {
+        sorted.insert(r.factor.clone(), r);
+    }
+    for (_, r) in &sorted {
+        println!(
+            "  {:<18} {:>10.4} {:>10.4} {:>10.4} {:>10.2} {:>8} {:>8.2}",
+            r.factor, r.mean_ic, r.std_ic, r.ic_ir, r.t_stat, r.n_days, r.positive_ratio
+        );
+    }
+    println!("Wrote: {}", output_path);
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
