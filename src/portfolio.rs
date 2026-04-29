@@ -12,6 +12,13 @@ pub struct SignalCandidate {
 pub enum PortfolioMethod {
     RiskParity,
     Hrp,
+    /// Hierarchical Equal Risk Contribution (Raffinot 2018).
+    ///
+    /// Same hierarchical clustering as HRP but at each split allocates
+    /// inversely proportional to cluster STDDEV (sigma) rather than
+    /// VARIANCE. This produces more diversified weights and is less
+    /// aggressive in down-weighting high-vol clusters.
+    Herc,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +43,9 @@ pub fn optimize_targets(
         PortfolioMethod::RiskParity => risk_parity_weights(candidates),
         PortfolioMethod::Hrp => {
             hrp_weights(candidates).unwrap_or_else(|| risk_parity_weights(candidates))
+        }
+        PortfolioMethod::Herc => {
+            herc_weights(candidates).unwrap_or_else(|| risk_parity_weights(candidates))
         }
     };
 
@@ -128,7 +138,7 @@ fn hrp_weights(candidates: &[SignalCandidate]) -> Option<HashMap<String, f64>> {
 
     let order = hierarchical_order(&corr)?;
     let mut weights = vec![1.0f64; n];
-    recursive_bisection(&order, &cov, &mut weights);
+    recursive_bisection(&order, &cov, &mut weights, BisectionMode::Variance);
 
     let sum: f64 = weights.iter().sum();
     if sum <= 0.0 {
@@ -140,6 +150,70 @@ fn hrp_weights(candidates: &[SignalCandidate]) -> Option<HashMap<String, f64>> {
         out.insert(candidates[idx].symbol.clone(), *w / sum);
     }
     Some(out)
+}
+
+/// HERC: same as HRP but at each split allocates inversely proportional to
+/// cluster sigma (stddev) rather than variance.
+///
+/// For two clusters with risks σ_L and σ_R, HERC sets:
+///     w_L = σ_R / (σ_L + σ_R)   (linear in sigma)
+/// HRP would use:
+///     w_L = σ_R² / (σ_L² + σ_R²) (quadratic — more aggressive)
+///
+/// HERC is the simpler ERC-at-each-node formulation from Raffinot (2018).
+/// Empirically more diversified out-of-sample than HRP.
+fn herc_weights(candidates: &[SignalCandidate]) -> Option<HashMap<String, f64>> {
+    if candidates.len() < 2 {
+        return None;
+    }
+
+    let min_len = candidates
+        .iter()
+        .map(|c| c.returns.len())
+        .min()
+        .unwrap_or(0);
+    if min_len < 4 {
+        return None;
+    }
+
+    let n = candidates.len();
+    let mut cov = vec![vec![0.0; n]; n];
+    let mut corr = vec![vec![0.0; n]; n];
+
+    for i in 0..n {
+        for j in i..n {
+            let a = &candidates[i].returns[candidates[i].returns.len() - min_len..];
+            let b = &candidates[j].returns[candidates[j].returns.len() - min_len..];
+            let (c_ij, r_ij) = cov_and_corr(a, b);
+            cov[i][j] = c_ij;
+            cov[j][i] = c_ij;
+            corr[i][j] = r_ij;
+            corr[j][i] = r_ij;
+        }
+    }
+
+    let order = hierarchical_order(&corr)?;
+    let mut weights = vec![1.0f64; n];
+    recursive_bisection(&order, &cov, &mut weights, BisectionMode::Sigma);
+
+    let sum: f64 = weights.iter().sum();
+    if sum <= 0.0 {
+        return None;
+    }
+
+    let mut out = HashMap::new();
+    for (idx, w) in weights.iter().enumerate() {
+        out.insert(candidates[idx].symbol.clone(), *w / sum);
+    }
+    Some(out)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BisectionMode {
+    /// HRP: alloc ∝ inverse variance (var_right / (var_left + var_right))
+    Variance,
+    /// HERC: alloc ∝ inverse sigma (sigma_right / (sigma_left + sigma_right))
+    Sigma,
 }
 
 fn cov_and_corr(a: &[f64], b: &[f64]) -> (f64, f64) {
@@ -227,7 +301,12 @@ fn avg_cluster_distance(left: &[usize], right: &[usize], corr: &[Vec<f64>]) -> f
     }
 }
 
-fn recursive_bisection(order: &[usize], cov: &[Vec<f64>], weights: &mut [f64]) {
+fn recursive_bisection(
+    order: &[usize],
+    cov: &[Vec<f64>],
+    weights: &mut [f64],
+    mode: BisectionMode,
+) {
     if order.len() <= 1 {
         return;
     }
@@ -237,7 +316,14 @@ fn recursive_bisection(order: &[usize], cov: &[Vec<f64>], weights: &mut [f64]) {
     let var_left = cluster_variance(left, cov).max(1e-12);
     let var_right = cluster_variance(right, cov).max(1e-12);
 
-    let alloc_left = var_right / (var_left + var_right);
+    let alloc_left = match mode {
+        BisectionMode::Variance => var_right / (var_left + var_right),
+        BisectionMode::Sigma => {
+            let sig_left = var_left.sqrt();
+            let sig_right = var_right.sqrt();
+            sig_right / (sig_left + sig_right)
+        }
+    };
     let alloc_right = 1.0 - alloc_left;
 
     for idx in left {
@@ -247,8 +333,8 @@ fn recursive_bisection(order: &[usize], cov: &[Vec<f64>], weights: &mut [f64]) {
         weights[*idx] *= alloc_right;
     }
 
-    recursive_bisection(left, cov, weights);
-    recursive_bisection(right, cov, weights);
+    recursive_bisection(left, cov, weights, mode);
+    recursive_bisection(right, cov, weights, mode);
 }
 
 fn cluster_variance(cluster: &[usize], cov: &[Vec<f64>]) -> f64 {
@@ -430,5 +516,107 @@ mod tests {
 
         let sum = out.values().sum::<f64>();
         assert!((sum - 120_000.0).abs() < 1e-3);
+    }
+
+    // ── HERC: same input as HRP, weights sum to budget ──────────
+    #[test]
+    fn herc_branch_returns_valid_weights() {
+        let candidates = vec![
+            SignalCandidate {
+                symbol: "AAA".to_string(),
+                alpha_score: 1.0,
+                volatility: 0.02,
+                returns: vec![0.01, 0.02, -0.01, 0.005, 0.003, 0.004],
+            },
+            SignalCandidate {
+                symbol: "BBB".to_string(),
+                alpha_score: 1.0,
+                volatility: 0.03,
+                returns: vec![0.012, 0.018, -0.008, 0.004, 0.002, 0.006],
+            },
+            SignalCandidate {
+                symbol: "CCC".to_string(),
+                alpha_score: 1.0,
+                volatility: 0.025,
+                returns: vec![-0.005, 0.009, 0.002, -0.001, 0.003, 0.004],
+            },
+        ];
+
+        let out = optimize_targets(
+            &candidates,
+            &HashMap::new(),
+            120_000.0,
+            PortfolioOptimizerConfig {
+                method: PortfolioMethod::Herc,
+                risk_parity_blend: 1.0,
+                max_turnover_ratio: 1.0,
+            },
+        );
+
+        let sum = out.values().sum::<f64>();
+        assert!((sum - 120_000.0).abs() < 1e-3);
+        // All weights should be positive
+        for (sym, w) in &out {
+            assert!(*w > 0.0, "{sym} weight should be positive: {w}");
+        }
+    }
+
+    // ── HERC vs HRP: HERC is more diversified (less concentrated) ──
+    #[test]
+    fn herc_is_more_diversified_than_hrp_on_uneven_vol() {
+        // Three assets where one has much higher volatility than the others.
+        // HRP penalises high-vol cluster more aggressively (variance-based),
+        // HERC penalises less (sigma-based), so HERC should give higher
+        // weight to the high-vol asset → more diversified.
+        let candidates = vec![
+            SignalCandidate {
+                symbol: "LOW1".to_string(),
+                alpha_score: 1.0,
+                volatility: 0.01,
+                returns: vec![0.001, 0.002, -0.001, 0.0005, 0.0003, 0.0004, 0.0008, 0.0001],
+            },
+            SignalCandidate {
+                symbol: "LOW2".to_string(),
+                alpha_score: 1.0,
+                volatility: 0.01,
+                returns: vec![0.0012, 0.0018, -0.0008, 0.0004, 0.0002, 0.0006, 0.0007, 0.0002],
+            },
+            SignalCandidate {
+                symbol: "HIGH".to_string(),
+                alpha_score: 1.0,
+                volatility: 0.05,
+                returns: vec![0.05, -0.04, 0.03, -0.02, 0.04, -0.05, 0.03, -0.04],
+            },
+        ];
+
+        let hrp = optimize_targets(
+            &candidates,
+            &HashMap::new(),
+            100_000.0,
+            PortfolioOptimizerConfig {
+                method: PortfolioMethod::Hrp,
+                risk_parity_blend: 1.0,
+                max_turnover_ratio: 1.0,
+            },
+        );
+
+        let herc = optimize_targets(
+            &candidates,
+            &HashMap::new(),
+            100_000.0,
+            PortfolioOptimizerConfig {
+                method: PortfolioMethod::Herc,
+                risk_parity_blend: 1.0,
+                max_turnover_ratio: 1.0,
+            },
+        );
+
+        let hrp_high = hrp.get("HIGH").copied().unwrap_or(0.0);
+        let herc_high = herc.get("HIGH").copied().unwrap_or(0.0);
+        // HERC should give the high-vol asset more weight than HRP
+        assert!(
+            herc_high > hrp_high,
+            "HERC should be more diversified: hrp_high={hrp_high}, herc_high={herc_high}"
+        );
     }
 }

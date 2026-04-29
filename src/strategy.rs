@@ -708,6 +708,7 @@ impl StrategyPlugin for MomentumOnlyStrategy {
 fn parse_portfolio_method(method: &str) -> PortfolioMethod {
     match method {
         "hrp" => PortfolioMethod::Hrp,
+        "herc" => PortfolioMethod::Herc,
         _ => PortfolioMethod::RiskParity,
     }
 }

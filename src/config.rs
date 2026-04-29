@@ -573,9 +573,12 @@ fn validate_strategy(strategy: &StrategyConfig) -> Result<()> {
     if strategy.max_turnover_ratio <= 0.0 {
         return Err(anyhow!("strategy max_turnover_ratio must be > 0"));
     }
-    if strategy.portfolio_method != "risk_parity" && strategy.portfolio_method != "hrp" {
+    if !matches!(
+        strategy.portfolio_method.as_str(),
+        "risk_parity" | "hrp" | "herc"
+    ) {
         return Err(anyhow!(
-            "strategy.portfolio_method must be risk_parity or hrp"
+            "strategy.portfolio_method must be risk_parity, hrp, or herc"
         ));
     }
     if strategy.hrp_lookback < 4 {
@@ -618,9 +621,9 @@ fn validate_strategy(strategy: &StrategyConfig) -> Result<()> {
             }
         }
         if let Some(method) = &route.portfolio_method {
-            if method != "risk_parity" && method != "hrp" {
+            if !matches!(method.as_str(), "risk_parity" | "hrp" | "herc") {
                 return Err(anyhow!(
-                    "strategy.market_routing.{market}.portfolio_method must be risk_parity or hrp"
+                    "strategy.market_routing.{market}.portfolio_method must be risk_parity, hrp, or herc"
                 ));
             }
         }
