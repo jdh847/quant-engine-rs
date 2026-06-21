@@ -28,6 +28,14 @@ pub fn ensure_ibkr_paper_allowed() -> Result<()> {
     ))
 }
 
+pub fn is_network_allowed() -> bool {
+    env_truthy("PQBOT_ALLOW_NETWORK")
+}
+
+pub fn is_ibkr_paper_allowed() -> bool {
+    env_truthy("PQBOT_ALLOW_IBKR_PAPER")
+}
+
 /// Hard stop for execution.
 ///
 /// When this is armed (`PQBOT_KILL_SWITCH=1|true|yes|on`), the engine should

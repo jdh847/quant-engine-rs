@@ -32,8 +32,14 @@ pub struct FactorICReport {
     pub mean_ic: f64,
     /// Std of per-date IC values.
     pub std_ic: f64,
-    /// IC Information Ratio: mean_ic / std_ic. > 0.5 is strong, < 0.1 is noise.
+    /// IC Information Ratio (DAILY): mean_ic / std_ic. This is the per-period
+    /// Sharpe of the IC series, NOT annualized. Real single factors land at
+    /// 0.03-0.10 here; do not compare against an annualized 0.5 bar.
     pub ic_ir: f64,
+    /// Annualized IC IR: ic_ir * sqrt(252). This is the figure that maps onto
+    /// the textbook "factor information ratio". > 0.5 is genuinely tradeable,
+    /// > 1.0 is strong. The capital signal gate evaluates THIS, not `ic_ir`.
+    pub annualized_ic_ir: f64,
     /// t-statistic: ic_ir * sqrt(N). > 2.0 is statistically meaningful.
     pub t_stat: f64,
     /// Number of days where IC was computable.
@@ -163,6 +169,9 @@ pub fn compute_factor_ics(snapshots: &[DailyFactorSnapshot]) -> Vec<FactorICRepo
             };
             let std = variance.sqrt();
             let ic_ir = if std > 1e-12 { mean / std } else { 0.0 };
+            // Annualize the daily IC IR to the textbook factor-IR scale.
+            // 252 trading days/year. This is the number the capital gate judges.
+            let annualized_ic_ir = ic_ir * 252_f64.sqrt();
             let t_stat = ic_ir * (n as f64).sqrt();
             let positive_ratio = if n > 0 {
                 ics.iter().filter(|&&ic| ic > 0.0).count() as f64 / n as f64
@@ -174,6 +183,7 @@ pub fn compute_factor_ics(snapshots: &[DailyFactorSnapshot]) -> Vec<FactorICRepo
                 mean_ic: mean,
                 std_ic: std,
                 ic_ir,
+                annualized_ic_ir,
                 t_stat,
                 n_days: n,
                 positive_ratio,

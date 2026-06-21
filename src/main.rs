@@ -23,6 +23,7 @@ use private_quant_bot::{
     leaderboard::{build_public_leaderboard, LeaderboardRequest},
     optimize::{run_walk_forward, WalkForwardRequest},
     output::write_outputs,
+    readiness::{run_readiness, ReadinessRequest},
     registry::{
         append_run_registry, infer_registry_root, read_run_registry, top_registry_entries,
         write_registry_views, RunRegistryBacktestInput, RunRegistryEntry,
@@ -187,6 +188,22 @@ enum Command {
         config: String,
         #[arg(long, default_value = "outputs_rust/data_quality")]
         output_dir: String,
+        #[arg(long, default_value_t = 0.35)]
+        return_outlier_threshold: f64,
+        #[arg(long, default_value_t = 10)]
+        gap_days_threshold: i64,
+    },
+    Readiness {
+        #[arg(long, default_value = "config/bot.toml")]
+        config: String,
+        #[arg(long, default_value = "outputs_rust/readiness")]
+        output_dir: String,
+        #[arg(long, default_value_t = 0.70)]
+        train_ratio: f64,
+        #[arg(long, default_value_t = 252)]
+        min_history_days: usize,
+        #[arg(long, default_value_t = 60)]
+        min_oos_days: usize,
         #[arg(long, default_value_t = 0.35)]
         return_outlier_threshold: f64,
         #[arg(long, default_value_t = 10)]
@@ -462,6 +479,23 @@ fn main() -> Result<()> {
             gap_days_threshold,
             cli.strategy_plugin.as_deref(),
         ),
+        Command::Readiness {
+            config,
+            output_dir,
+            train_ratio,
+            min_history_days,
+            min_oos_days,
+            return_outlier_threshold,
+            gap_days_threshold,
+        } => readiness_command(
+            &config,
+            &output_dir,
+            train_ratio,
+            min_history_days,
+            min_oos_days,
+            return_outlier_threshold,
+            gap_days_threshold,
+        ),
         Command::PaperDaemon {
             config,
             output_dir,
@@ -579,7 +613,20 @@ fn factor_ic_command(config_path: &str, output_path: &str, market_filter: &str) 
         volume_window: cfg.strategy.volume_window,
     };
 
-    let timeline = extract_factor_timeline(&bars, &windows);
+    // Build a symbol -> industry map from the (market-filtered) configs so the
+    // cross-sectional industry_relative_reversion factor can group peers.
+    let mut industries: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (market_name, market_cfg) in &cfg.markets {
+        if !market_filter.is_empty() && market_name != market_filter {
+            continue;
+        }
+        for (symbol, industry) in &market_cfg.industry_map {
+            industries.insert(symbol.clone(), industry.clone());
+        }
+    }
+
+    let timeline = extract_factor_timeline(&bars, &windows, &industries);
     let reports = compute_factor_ics(&timeline);
 
     // Ensure output directory exists.
@@ -605,8 +652,8 @@ fn factor_ic_command(config_path: &str, output_path: &str, market_filter: &str) 
         if market_filter.is_empty() { "ALL" } else { market_filter }
     );
     println!(
-        "  {:<18} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
-        "factor", "mean_ic", "std_ic", "ic_ir", "t_stat", "n_days", "pos_rt"
+        "  {:<26} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
+        "factor", "mean_ic", "std_ic", "ic_ir", "ann_ic_ir", "t_stat", "n_days", "pos_rt"
     );
     let mut sorted: BTreeMap<String, &_> = BTreeMap::new();
     for r in &reports {
@@ -614,8 +661,8 @@ fn factor_ic_command(config_path: &str, output_path: &str, market_filter: &str) 
     }
     for (_, r) in &sorted {
         println!(
-            "  {:<18} {:>10.4} {:>10.4} {:>10.4} {:>10.2} {:>8} {:>8.2}",
-            r.factor, r.mean_ic, r.std_ic, r.ic_ir, r.t_stat, r.n_days, r.positive_ratio
+            "  {:<26} {:>10.4} {:>10.4} {:>10.4} {:>10.3} {:>10.2} {:>8} {:>8.2}",
+            r.factor, r.mean_ic, r.std_ic, r.ic_ir, r.annualized_ic_ir, r.t_stat, r.n_days, r.positive_ratio
         );
     }
     println!("Wrote: {}", output_path);
@@ -1534,6 +1581,61 @@ fn paper_daemon_command(
     Ok(())
 }
 
+fn readiness_command(
+    config_path: &str,
+    output_dir: &str,
+    train_ratio: f64,
+    min_history_days: usize,
+    min_oos_days: usize,
+    return_outlier_threshold: f64,
+    gap_days_threshold: i64,
+) -> Result<()> {
+    let report = run_readiness(&ReadinessRequest {
+        config_path: PathBuf::from(config_path),
+        output_dir: PathBuf::from(output_dir),
+        train_ratio,
+        min_history_days,
+        min_oos_days,
+        return_outlier_threshold,
+        gap_days_threshold,
+    })?;
+
+    println!(
+        "readiness completed | tier={} history_days={} report={}/readiness_report.json",
+        report.readiness_tier, report.history_days, output_dir
+    );
+    if let Some(oos) = &report.oos {
+        println!(
+            "oos | test={}..{} pnl={:.2}% maxdd={:.2}% sharpe={:.3} trades={}",
+            oos.test_start,
+            oos.test_end,
+            oos.pnl_ratio * 100.0,
+            oos.max_drawdown * 100.0,
+            oos.sharpe,
+            oos.trades
+        );
+    } else {
+        println!("oos | skipped");
+    }
+
+    let cfg = load_config(config_path)?;
+    let registry = append_registry_operation(
+        &cfg,
+        "readiness",
+        output_dir,
+        "pilot_capital_ratio",
+        report.pilot_capital_ratio,
+        &format!("tier={}", report.readiness_tier),
+    )?;
+    println!(
+        "run_registry: {} (runs={})",
+        registry.csv_path.display(),
+        registry.total_runs
+    );
+
+    Ok(())
+}
+
 fn parse_usize_list(text: &str) -> Result<Vec<usize>> {
     let out: Vec<usize> = text
         .split(',')
@@ -1588,9 +1690,9 @@ fn parse_portfolio_methods(text: &str) -> Result<Vec<String>> {
         return Err(anyhow::anyhow!("empty portfolio method list"));
     }
     for method in &methods {
-        if method != "risk_parity" && method != "hrp" {
+        if method != "risk_parity" && method != "hrp" && method != "herc" {
             return Err(anyhow::anyhow!(
-                "unsupported portfolio method: {method}; expected risk_parity or hrp"
+                "unsupported portfolio method: {method}; expected risk_parity, hrp, or herc"
             ));
         }
     }

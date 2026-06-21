@@ -9,11 +9,13 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::capital_readiness::evaluate_capital_readiness;
 use crate::i18n::{dashboard_text, DashboardText, Language};
 use crate::paper_hints::{
     build_paper_hints, render_paper_hints_summary, PaperHintsCompareInput, PaperHintsDaemonInput,
 };
 use crate::registry::{infer_registry_root, read_run_registry, RunRegistryEntry};
+use crate::validation_snapshot::load_validation_snapshot;
 
 #[derive(Debug, Serialize)]
 struct EquityRow {
@@ -353,6 +355,23 @@ struct DashboardI18nText {
     generated_from: String,
     paper_ops_center: String,
     paper_hints: String,
+    strategy_validation: String,
+    capital_readiness: String,
+    overall_decision: String,
+    signal_gate: String,
+    portfolio_gate: String,
+    execution_gate: String,
+    behavior_gate: String,
+    no_go: String,
+    go_tiny_pilot_only: String,
+    unknown: String,
+    full_real_window: String,
+    recent_real_window: String,
+    us_long_sample: String,
+    route_decision: String,
+    readiness_tier: String,
+    data_quality_state: String,
+    validation_not_found: String,
     overview: String,
     series: String,
     equity: String,
@@ -519,6 +538,23 @@ fn i18n_text(t: DashboardText) -> DashboardI18nText {
         generated_from: t.generated_from.to_string(),
         paper_ops_center: t.paper_ops_center.to_string(),
         paper_hints: t.paper_hints.to_string(),
+        strategy_validation: t.strategy_validation.to_string(),
+        capital_readiness: t.capital_readiness.to_string(),
+        overall_decision: t.overall_decision.to_string(),
+        signal_gate: t.signal_gate.to_string(),
+        portfolio_gate: t.portfolio_gate.to_string(),
+        execution_gate: t.execution_gate.to_string(),
+        behavior_gate: t.behavior_gate.to_string(),
+        no_go: t.no_go.to_string(),
+        go_tiny_pilot_only: t.go_tiny_pilot_only.to_string(),
+        unknown: t.unknown.to_string(),
+        full_real_window: t.full_real_window.to_string(),
+        recent_real_window: t.recent_real_window.to_string(),
+        us_long_sample: t.us_long_sample.to_string(),
+        route_decision: t.route_decision.to_string(),
+        readiness_tier: t.readiness_tier.to_string(),
+        data_quality_state: t.data_quality_state.to_string(),
+        validation_not_found: t.validation_not_found.to_string(),
         overview: t.overview.to_string(),
         series: t.series.to_string(),
         equity: t.equity.to_string(),
@@ -833,6 +869,8 @@ pub fn build_dashboard_with_language(
         daemon_input.as_ref(),
         compare_input.as_ref(),
     );
+    let validation_snapshot = load_validation_snapshot(&registry_root);
+    let capital_readiness = evaluate_capital_readiness(&registry_root, &validation_snapshot);
     fs::write(
         output_dir.join("paper_hints_summary.txt"),
         render_paper_hints_summary(&paper_hints),
@@ -861,6 +899,8 @@ pub fn build_dashboard_with_language(
     let recent_compare_json = serde_json::to_string(&recent_compare)?;
     let compare_history_json = serde_json::to_string(&compare_history)?;
     let paper_hints_json = serde_json::to_string(&paper_hints)?;
+    let validation_snapshot_json = serde_json::to_string(&validation_snapshot)?;
+    let capital_readiness_json = serde_json::to_string(&capital_readiness)?;
     let registry_refresh_path_json = serde_json::to_string(&registry_refresh_path)?;
     let leaderboard_refresh_path_json = serde_json::to_string(&leaderboard_refresh_path)?;
     let text = dashboard_text(language);
@@ -1059,6 +1099,22 @@ th {{ color: var(--muted); font-weight: 600; }}
       </div>
       <div id="paper-hints-card" class="regime-card"></div>
       <div id="paper-hints-feed" class="feed-grid"></div>
+    </section>
+
+    <section class="panel" data-delay="1" style="margin-bottom: 16px;">
+      <div class="toolbar">
+        <h3 id="strategy-validation-title" style="margin:0;">{strategy_validation}</h3>
+        <span class="chip" id="strategy-validation-chip"></span>
+      </div>
+      <div id="strategy-validation-grid" class="ops-grid"></div>
+    </section>
+
+    <section class="panel" data-delay="1" style="margin-bottom: 16px;">
+      <div class="toolbar">
+        <h3 id="capital-readiness-title" style="margin:0;">{capital_readiness}</h3>
+        <span class="chip" id="capital-readiness-chip"></span>
+      </div>
+      <div id="capital-readiness-grid" class="ops-grid"></div>
     </section>
 
     <div class="grid">
@@ -1681,6 +1737,8 @@ let auditConfigSha = {audit_config_sha_json};
 let recentCompare = {recent_compare_json};
 let compareHistory = {compare_history_json};
 let paperHints = {paper_hints_json};
+let validationSnapshot = {validation_snapshot_json};
+let capitalReadiness = {capital_readiness_json};
 const registryRefreshPath = {registry_refresh_path_json};
 const leaderboardRefreshPath = {leaderboard_refresh_path_json};
 const i18n = {i18n_json};
@@ -2790,6 +2848,128 @@ function renderPaperOpsCenter(text) {{
   chip.textContent = `run=${{labelFor(runLevel)}} | dq=${{labelFor(dqLevel)}} | research=${{labelFor(researchLevel)}}`;
 }}
 
+function validationLevel(item) {{
+  if (!item) return 'watch';
+  const dq = String(item.data_quality_status || '').toUpperCase();
+  const sharpe = Number(item.sharpe);
+  if (dq === 'FAIL') return 'risk';
+  if (Number.isFinite(sharpe) && sharpe >= 0.75 && dq === 'PASS') return 'healthy';
+  if (Number.isFinite(sharpe) && sharpe >= 0 && dq !== 'FAIL') return 'watch';
+  return 'risk';
+}}
+
+function renderStrategyValidation(text) {{
+  const root = document.getElementById('strategy-validation-grid');
+  const chip = document.getElementById('strategy-validation-chip');
+  if (!root || !chip) return;
+
+  const full = validationSnapshot && validationSnapshot.full_real_window;
+  const recent = validationSnapshot && validationSnapshot.recent_real_window;
+  const usLong = validationSnapshot && validationSnapshot.us_long_sample;
+  const route = validationSnapshot && validationSnapshot.route_decision;
+
+  if (!full && !recent && !usLong && !route) {{
+    chip.textContent = text.watch;
+    chip.className = 'chip warn';
+    root.innerHTML = `<div class="summary">${{esc(text.validation_not_found)}}</div>`;
+    return;
+  }}
+
+  const labelFor = (level) => level === 'healthy' ? text.healthy : (level === 'watch' ? text.watch : text.risk);
+  const fullLevel = validationLevel(full);
+  const recentLevel = validationLevel(recent);
+  const longLevel = !usLong
+    ? 'watch'
+    : ((Number(usLong.sharpe || 0) > 0.5 && Number(usLong.max_drawdown || 1) < 0.12) ? 'healthy'
+      : (Number(usLong.sharpe || 0) >= 0 ? 'watch' : 'risk'));
+  chip.textContent = `full=${{labelFor(fullLevel)}} | recent=${{labelFor(recentLevel)}} | us=${{labelFor(longLevel)}}`;
+  chip.className = `chip ${{fullLevel === 'risk' || recentLevel === 'risk' || longLevel === 'risk' ? 'warn' : 'ok'}}`;
+
+  const cards = [];
+  if (full) {{
+    cards.push({{
+      label: text.full_real_window,
+      level: fullLevel,
+      main: `${{text.readiness_tier}}=${{full.readiness_tier || '-'}} | Sharpe=${{full.sharpe == null ? '-' : Number(full.sharpe).toFixed(2)}}`,
+      sub: `${{full.test_start || '-'}} -> ${{full.test_end || '-'}} | PnL=${{fmtPct(full.pnl_ratio)}} | DD=${{fmtPct(full.max_drawdown)}} | ${{text.data_quality_state}}=${{full.data_quality_status || '-'}} (${{Number(full.pass_markets || 0)}}/${{Number(full.warn_markets || 0)}}/${{Number(full.fail_markets || 0)}})`,
+    }});
+  }}
+  if (recent) {{
+    cards.push({{
+      label: text.recent_real_window,
+      level: recentLevel,
+      main: `${{text.readiness_tier}}=${{recent.readiness_tier || '-'}} | Sharpe=${{recent.sharpe == null ? '-' : Number(recent.sharpe).toFixed(2)}}`,
+      sub: `${{recent.test_start || '-'}} -> ${{recent.test_end || '-'}} | PnL=${{fmtPct(recent.pnl_ratio)}} | DD=${{fmtPct(recent.max_drawdown)}} | notes=${{Array.isArray(recent.notes) && recent.notes.length ? recent.notes.join('|') : '-'}}`,
+    }});
+  }}
+  if (usLong) {{
+    cards.push({{
+      label: text.us_long_sample,
+      level: longLevel,
+      main: `${{text.route_decision}}=${{route && route.decision ? route.decision : '-'}} | Sharpe=${{usLong.sharpe == null ? '-' : Number(usLong.sharpe).toFixed(2)}}`,
+      sub: `tuned PnL=${{fmtPct(usLong.pnl_ratio)}} | tuned DD=${{fmtPct(usLong.max_drawdown)}} | baseline PnL=${{fmtPct(route && route.baseline_pnl_ratio != null ? route.baseline_pnl_ratio : null)}} | candidate PnL=${{fmtPct(route && route.candidate_pnl_ratio != null ? route.candidate_pnl_ratio : null)}}`,
+    }});
+  }}
+
+  root.innerHTML = cards.map((card) => `<div class="ops-card">
+    <div class="top">
+      <div class="label">${{esc(card.label)}}</div>
+      <div class="status ${{healthBadgeClass(card.level)}}">${{esc(labelFor(card.level))}}</div>
+    </div>
+    <div class="main">${{esc(card.main)}}</div>
+    <div class="sub">${{esc(card.sub)}}</div>
+  </div>`).join('');
+}}
+
+function translateReadinessDecision(decision, text) {{
+  if (decision === 'GO_TINY_PILOT_ONLY') return text.go_tiny_pilot_only;
+  if (decision === 'NO_GO') return text.no_go;
+  if (!decision) return text.unknown;
+  return decision;
+}}
+
+function renderCapitalReadiness(text) {{
+  const root = document.getElementById('capital-readiness-grid');
+  const chip = document.getElementById('capital-readiness-chip');
+  if (!root || !chip) return;
+  const report = capitalReadiness;
+  if (!report) {{
+    chip.textContent = text.unknown;
+    chip.className = 'chip warn';
+    root.innerHTML = `<div class="summary">${{esc(text.validation_not_found)}}</div>`;
+    return;
+  }}
+
+  const statusLevel = (status) => {{
+    if (status === 'PASS') return 'healthy';
+    if (status === 'WATCH' || status === 'UNKNOWN') return 'watch';
+    return 'risk';
+  }};
+  const labelFor = (level) => level === 'healthy' ? text.healthy : (level === 'watch' ? text.watch : text.risk);
+  const overallLevel = report.decision === 'GO_TINY_PILOT_ONLY' ? 'healthy' : 'risk';
+  chip.textContent = `${{text.overall_decision}}=${{translateReadinessDecision(report.decision, text)}}`;
+  chip.className = `chip ${{overallLevel === 'healthy' ? 'ok' : 'warn'}}`;
+
+  const gates = [
+    {{ label: text.signal_gate, gate: report.signal_gate }},
+    {{ label: text.portfolio_gate, gate: report.portfolio_gate }},
+    {{ label: text.execution_gate, gate: report.execution_gate }},
+    {{ label: text.behavior_gate, gate: report.behavior_gate }},
+  ];
+  root.innerHTML = gates.map((item) => {{
+    const gate = item.gate || {{}};
+    const level = statusLevel(gate.status || 'UNKNOWN');
+    return `<div class="ops-card">
+      <div class="top">
+        <div class="label">${{esc(item.label)}}</div>
+        <div class="status ${{healthBadgeClass(level)}}">${{esc(gate.status || text.unknown)}}</div>
+      </div>
+      <div class="main">${{esc(gate.headline || '-')}}</div>
+      <div class="sub">${{esc(gate.detail || '-')}} | artifact=${{esc(gate.artifact || '-')}}</div>
+    </div>`;
+  }}).join('');
+}}
+
 function syncResearchControls(text) {{
   const scopeSel = document.getElementById('research-decay-scope');
   const prevScope = scopeSel.value || 'ALL';
@@ -3615,6 +3795,8 @@ function applyLanguage(lang) {{
   document.getElementById('generated-from').textContent = text.generated_from;
   document.getElementById('paper-ops-center').textContent = text.paper_ops_center;
   document.getElementById('paper-hints-title').textContent = text.paper_hints;
+  document.getElementById('strategy-validation-title').textContent = text.strategy_validation;
+  document.getElementById('capital-readiness-title').textContent = text.capital_readiness;
   document.getElementById('overview').textContent = text.overview;
   document.getElementById('series-label').textContent = text.series;
   document.getElementById('equity-curve').textContent = text.equity_curve;
@@ -3799,6 +3981,8 @@ function applyLanguage(lang) {{
   setupFilters(text);
   renderPaperHints(text);
   renderPaperOpsCenter(text);
+  renderStrategyValidation(text);
+  renderCapitalReadiness(text);
   renderKpis(text);
   renderChart(text);
   renderTrades(text);
@@ -4105,6 +4289,8 @@ refreshFromFiles();
         generated_from = text.generated_from,
         paper_ops_center = text.paper_ops_center,
         paper_hints = text.paper_hints,
+        strategy_validation = text.strategy_validation,
+        capital_readiness = text.capital_readiness,
         overview = text.overview,
         series = text.series,
         equity_curve = text.equity_curve,
@@ -4221,6 +4407,8 @@ refreshFromFiles();
         recent_compare_json = recent_compare_json,
         compare_history_json = compare_history_json,
         paper_hints_json = paper_hints_json,
+        validation_snapshot_json = validation_snapshot_json,
+        capital_readiness_json = capital_readiness_json,
         registry_refresh_path_json = registry_refresh_path_json,
         leaderboard_refresh_path_json = leaderboard_refresh_path_json,
         i18n_json = i18n_json,
@@ -5473,6 +5661,12 @@ mod tests {
         assert!(html.contains("Paper Hints"));
         assert!(html.contains("paper-hints-card"));
         assert!(html.contains("paper-hints-feed"));
+        assert!(html.contains("Strategy Validation"));
+        assert!(html.contains("strategy-validation-grid"));
+        assert!(html.contains("strategy-validation-chip"));
+        assert!(html.contains("Capital Readiness"));
+        assert!(html.contains("capital-readiness-grid"));
+        assert!(html.contains("capital-readiness-chip"));
         assert!(html.contains("Research"));
         assert!(html.contains("Walk-Forward Winner Board"));
         assert!(html.contains("Regime-Aware Leaderboard"));

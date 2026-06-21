@@ -19,6 +19,7 @@ pub trait StrategyPlugin {
 
 const LAYERED_MULTI_FACTOR: &str = "layered_multi_factor";
 const MOMENTUM_GUARD: &str = "momentum_guard";
+const INDUSTRY_RELATIVE_REVERSION: &str = "industry_relative_reversion";
 
 pub struct StrategyPluginInfo {
     pub id: &'static str,
@@ -46,6 +47,12 @@ pub fn strategy_plugin_catalog() -> &'static [StrategyPluginInfo] {
             name: "Momentum Guard",
             description:
                 "Lightweight momentum/volatility strategy with trend and regime guardrails.",
+        },
+        StrategyPluginInfo {
+            id: INDUSTRY_RELATIVE_REVERSION,
+            name: "Industry Relative Reversion",
+            description:
+                "Industry-relative spread reversion with volume confirmation and regime scaling.",
         },
     ]
 }
@@ -106,6 +113,9 @@ pub fn build_strategy(
     match cfg.strategy_plugin.as_str() {
         MOMENTUM_GUARD => Box::new(MomentumOnlyStrategy::new(cfg)),
         LAYERED_MULTI_FACTOR => Box::new(MomentumTrendStrategy::new(cfg, industries)),
+        INDUSTRY_RELATIVE_REVERSION => {
+            Box::new(IndustryRelativeReversionStrategy::new(cfg, industries))
+        }
         plugin_id => {
             if let Some(plugin_cfg) = list_registered_sdk_plugins_or_empty()
                 .into_iter()
@@ -142,6 +152,28 @@ struct FactorSnapshot {
     volume_signal: f64,
     returns: Vec<f64>,
     trend_ok: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RelativeValueSnapshot {
+    market: String,
+    symbol: String,
+    industry: String,
+    momentum: f64,
+    recent_return: f64,
+    volatility: f64,
+    volume_signal: f64,
+    returns: Vec<f64>,
+    trend_ok: bool,
+}
+
+#[derive(Debug)]
+pub struct IndustryRelativeReversionStrategy {
+    cfg: StrategyConfig,
+    history: HashMap<(String, String), SymbolHistory>,
+    industries: HashMap<(String, String), String>,
+    rebalance_counter: usize,
+    last_targets: HashMap<String, f64>,
 }
 
 #[derive(Debug)]
@@ -521,6 +553,347 @@ impl MomentumTrendStrategy {
     }
 }
 
+impl IndustryRelativeReversionStrategy {
+    pub fn new(cfg: StrategyConfig, industries: HashMap<(String, String), String>) -> Self {
+        Self {
+            cfg,
+            history: HashMap::new(),
+            industries,
+            rebalance_counter: 0,
+            last_targets: HashMap::new(),
+        }
+    }
+
+    fn snapshot(&mut self, bar: &Bar) -> Option<RelativeValueSnapshot> {
+        let key = (bar.market.clone(), bar.symbol.clone());
+        let history = self.history.entry(key).or_default();
+        let max_len = self
+            .cfg
+            .long_window
+            .max(self.cfg.vol_window + 1)
+            .max(self.cfg.regime_vol_window + 1)
+            .max(self.cfg.mean_reversion_window + 1)
+            .max(self.cfg.volume_window)
+            .max(self.cfg.hrp_lookback + 1);
+
+        history.closes.push_back(bar.close);
+        history.volumes.push_back(bar.volume);
+        while history.closes.len() > max_len {
+            history.closes.pop_front();
+        }
+        while history.volumes.len() > max_len {
+            history.volumes.pop_front();
+        }
+
+        if history.closes.len()
+            < self
+                .cfg
+                .long_window
+                .max(self.cfg.vol_window + 1)
+                .max(self.cfg.mean_reversion_window + 1)
+            || history.volumes.len() < self.cfg.volume_window
+        {
+            return None;
+        }
+
+        let len = history.closes.len();
+        let closes = history.closes.make_contiguous();
+        let short_slice = &closes[len - self.cfg.short_window..len];
+        let long_slice = &closes[len - self.cfg.long_window..len];
+
+        let short_ma = short_slice.iter().sum::<f64>() / short_slice.len() as f64;
+        let long_ma = long_slice.iter().sum::<f64>() / long_slice.len() as f64;
+        let trend_ok = short_ma >= long_ma;
+        let momentum = bar.close / long_slice[0] - 1.0;
+
+        let recent_base_idx = len - 1 - self.cfg.mean_reversion_window;
+        let recent_base = closes[recent_base_idx];
+        let recent_return = bar.close / recent_base - 1.0;
+
+        let vol_slice = &closes[len - (self.cfg.vol_window + 1)..];
+        let returns = vol_slice
+            .windows(2)
+            .map(|pair| pair[1] / pair[0] - 1.0)
+            .collect::<Vec<_>>();
+        let volatility = stddev(&returns).max(1e-6);
+        let hrp_returns = trailing_returns(closes, self.cfg.hrp_lookback);
+
+        let volumes = history.volumes.make_contiguous();
+        let volume_slice = &volumes[volumes.len() - self.cfg.volume_window..];
+        let avg_volume = volume_slice.iter().sum::<f64>() / volume_slice.len() as f64;
+        let volume_signal = if avg_volume > 0.0 {
+            bar.volume / avg_volume - 1.0
+        } else {
+            0.0
+        };
+
+        Some(RelativeValueSnapshot {
+            market: bar.market.clone(),
+            symbol: bar.symbol.clone(),
+            industry: self.industry_for(&bar.market, &bar.symbol),
+            momentum,
+            recent_return,
+            volatility,
+            volume_signal,
+            returns: hrp_returns,
+            trend_ok,
+        })
+    }
+
+    fn target_notionals(
+        &mut self,
+        bars: &[Bar],
+        market_budget: f64,
+        current_notionals: &HashMap<String, f64>,
+    ) -> HashMap<String, f64> {
+        let mut snapshots = Vec::new();
+        for bar in bars {
+            if let Some(snapshot) = self.snapshot(bar) {
+                snapshots.push(snapshot);
+            }
+        }
+
+        let mut targets: HashMap<String, f64> =
+            bars.iter().map(|bar| (bar.symbol.clone(), 0.0)).collect();
+        if snapshots.len() < 2 {
+            return targets;
+        }
+
+        let rebalance_interval = self.cfg.rebalance_interval_days.max(1);
+        if !self.last_targets.is_empty() && self.rebalance_counter % rebalance_interval != 0 {
+            self.rebalance_counter += 1;
+            for symbol in targets.keys().cloned().collect::<Vec<_>>() {
+                if let Some(target) = self.last_targets.get(&symbol).copied() {
+                    targets.insert(symbol, target);
+                }
+            }
+            return targets;
+        }
+        self.rebalance_counter += 1;
+
+        let mut industry_return_stats: HashMap<String, (usize, f64)> = HashMap::new();
+        for snapshot in &snapshots {
+            let entry = industry_return_stats
+                .entry(snapshot.industry.clone())
+                .or_insert((0usize, 0.0));
+            entry.0 += 1;
+            entry.1 += snapshot.recent_return;
+        }
+
+        let relative_scores = snapshots
+            .iter()
+            .filter_map(|snapshot| {
+                let (count, sum) = industry_return_stats.get(&snapshot.industry)?;
+                if *count < 2 {
+                    return None;
+                }
+                let industry_mean = *sum / *count as f64;
+                Some((
+                    snapshot.symbol.clone(),
+                    industry_mean - snapshot.recent_return,
+                ))
+            })
+            .collect::<Vec<_>>();
+        if relative_scores.is_empty() {
+            return targets;
+        }
+
+        let relative_z = winsorized_zscores(&relative_scores, self.cfg.winsorize_pct);
+        let momentum_z = winsorized_zscores(
+            &snapshots
+                .iter()
+                .map(|s| (s.symbol.clone(), s.momentum))
+                .collect::<Vec<_>>(),
+            self.cfg.winsorize_pct,
+        );
+        let volume_z = winsorized_zscores(
+            &snapshots
+                .iter()
+                .map(|s| (s.symbol.clone(), s.volume_signal))
+                .collect::<Vec<_>>(),
+            self.cfg.winsorize_pct,
+        );
+        let volatility_z = winsorized_zscores(
+            &snapshots
+                .iter()
+                .map(|s| (s.symbol.clone(), s.volatility))
+                .collect::<Vec<_>>(),
+            self.cfg.winsorize_pct,
+        );
+
+        let mut layer1 = snapshots
+            .iter()
+            .filter_map(|snapshot| {
+                let rel = relative_z.get(&snapshot.symbol).copied()?;
+                if !rel.is_finite() {
+                    return None;
+                }
+                let score = self.cfg.factor_mean_reversion_weight * rel
+                    + self.cfg.factor_volume_weight
+                        * volume_z.get(&snapshot.symbol).copied().unwrap_or(0.0);
+                Some((snapshot.symbol.clone(), score))
+            })
+            .collect::<Vec<_>>();
+        layer1.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        let keep = ((layer1.len() as f64 * self.cfg.layer1_select_ratio).ceil() as usize)
+            .max(self.cfg.top_n.saturating_mul(2))
+            .max(1)
+            .min(layer1.len());
+        let selected = layer1
+            .iter()
+            .take(keep)
+            .map(|(symbol, score)| (symbol.clone(), *score))
+            .collect::<HashMap<_, _>>();
+
+        let mut scored = Vec::new();
+        for snapshot in &snapshots {
+            let Some(layer1_score) = selected.get(&snapshot.symbol).copied() else {
+                continue;
+            };
+            let relative_score = relative_z.get(&snapshot.symbol).copied().unwrap_or(0.0);
+            if relative_score <= 0.0 {
+                continue;
+            }
+            if snapshot.momentum < self.cfg.min_momentum {
+                continue;
+            }
+            if !snapshot.trend_ok && relative_score < 0.75 {
+                continue;
+            }
+
+            let layer2_score = layer1_score
+                + self.cfg.factor_low_vol_weight
+                    * -volatility_z.get(&snapshot.symbol).copied().unwrap_or(0.0)
+                + self.cfg.factor_momentum_weight
+                    * momentum_z.get(&snapshot.symbol).copied().unwrap_or(0.0);
+
+            if !layer2_score.is_finite() || layer2_score <= 0.0 {
+                continue;
+            }
+
+            scored.push((
+                snapshot.market.clone(),
+                snapshot.symbol.clone(),
+                layer2_score,
+                snapshot.volatility,
+                snapshot.returns.clone(),
+            ));
+        }
+
+        let mut scored = self.industry_neutralize_scores(scored);
+        scored.sort_by(|a, b| b.2.total_cmp(&a.2));
+        scored.truncate(self.cfg.top_n);
+        if scored.is_empty() {
+            return targets;
+        }
+
+        let scaled_budget = market_budget * self.market_regime_scale(bars);
+        let candidates = scored
+            .into_iter()
+            .map(|(_, symbol, score, volatility, returns)| SignalCandidate {
+                symbol,
+                alpha_score: score,
+                volatility,
+                returns,
+            })
+            .collect::<Vec<_>>();
+
+        let optimized = optimize_targets(
+            &candidates,
+            current_notionals,
+            scaled_budget,
+            PortfolioOptimizerConfig {
+                method: parse_portfolio_method(&self.cfg.portfolio_method),
+                risk_parity_blend: self.cfg.risk_parity_blend,
+                max_turnover_ratio: self.cfg.max_turnover_ratio,
+            },
+        );
+        for (symbol, target) in optimized {
+            targets.insert(symbol, target);
+        }
+        self.last_targets = targets.clone();
+        targets
+    }
+
+    fn market_regime_scale(&self, bars: &[Bar]) -> f64 {
+        let mut symbol_vols = Vec::new();
+        for bar in bars {
+            let key = (bar.market.clone(), bar.symbol.clone());
+            let Some(history) = self.history.get(&key) else {
+                continue;
+            };
+
+            let needed = self.cfg.regime_vol_window + 1;
+            if history.closes.len() < needed {
+                continue;
+            }
+
+            let prices: Vec<f64> = history.closes.iter().copied().collect();
+            let start = prices.len().saturating_sub(needed);
+            let mut returns = Vec::with_capacity(self.cfg.regime_vol_window);
+            for pair in prices[start..].windows(2) {
+                returns.push(pair[1] / pair[0] - 1.0);
+            }
+            let vol = stddev(&returns);
+            if vol.is_finite() && vol > 0.0 {
+                symbol_vols.push(vol);
+            }
+        }
+
+        if symbol_vols.is_empty() {
+            return 1.0;
+        }
+
+        let market_vol = symbol_vols.iter().sum::<f64>() / symbol_vols.len() as f64;
+        let raw_scale = self.cfg.regime_target_vol / market_vol.max(1e-6);
+        raw_scale.clamp(self.cfg.regime_floor_scale, self.cfg.regime_ceiling_scale)
+    }
+
+    fn industry_neutralize_scores(
+        &self,
+        rows: Vec<(String, String, f64, f64, Vec<f64>)>,
+    ) -> Vec<(String, String, f64, f64, Vec<f64>)> {
+        let mut stats: HashMap<String, (usize, f64)> = HashMap::new();
+        for (market, symbol, score, _, _) in &rows {
+            let industry = self.industry_for(market, symbol);
+            let entry = stats.entry(industry).or_insert((0, 0.0));
+            entry.0 += 1;
+            entry.1 += *score;
+        }
+
+        rows.into_iter()
+            .map(|(market, symbol, score, vol, returns)| {
+                let industry = self.industry_for(&market, &symbol);
+                let neutral = if let Some((count, sum)) = stats.get(&industry) {
+                    if *count >= 2 {
+                        score - self.cfg.industry_neutral_strength * (sum / *count as f64)
+                    } else {
+                        score
+                    }
+                } else {
+                    score
+                };
+                (market, symbol, neutral, vol, returns)
+            })
+            .filter(|(_, _, score, _, _)| score.is_finite() && *score > 0.0)
+            .collect()
+    }
+
+    fn industry_for(&self, market: &str, symbol: &str) -> String {
+        self.industries
+            .get(&(market.to_string(), symbol.to_string()))
+            .cloned()
+            .unwrap_or_else(|| {
+                let prefix: String = symbol.chars().take(2).collect();
+                format!(
+                    "{market}_{}",
+                    if prefix.is_empty() { "GEN" } else { &prefix }
+                )
+            })
+    }
+}
+
 impl StrategyPlugin for MomentumTrendStrategy {
     fn id(&self) -> &'static str {
         LAYERED_MULTI_FACTOR
@@ -533,6 +906,26 @@ impl StrategyPlugin for MomentumTrendStrategy {
         current_notionals: &HashMap<String, f64>,
     ) -> HashMap<String, f64> {
         MomentumTrendStrategy::target_notionals(self, bars, market_budget, current_notionals)
+    }
+}
+
+impl StrategyPlugin for IndustryRelativeReversionStrategy {
+    fn id(&self) -> &'static str {
+        INDUSTRY_RELATIVE_REVERSION
+    }
+
+    fn target_notionals(
+        &mut self,
+        bars: &[Bar],
+        market_budget: f64,
+        current_notionals: &HashMap<String, f64>,
+    ) -> HashMap<String, f64> {
+        IndustryRelativeReversionStrategy::target_notionals(
+            self,
+            bars,
+            market_budget,
+            current_notionals,
+        )
     }
 }
 
@@ -800,7 +1193,10 @@ mod tests {
 
     use crate::{config::StrategyConfig, model::Bar};
 
-    use super::{available_strategy_plugins, build_strategy, MomentumTrendStrategy};
+    use super::{
+        available_strategy_plugins, build_strategy, IndustryRelativeReversionStrategy,
+        MomentumTrendStrategy,
+    };
 
     #[test]
     fn regime_scale_reduces_budget_when_volatility_spikes() {
@@ -808,6 +1204,7 @@ mod tests {
             StrategyConfig {
                 strategy_plugin: "layered_multi_factor".to_string(),
                 market_routing: BTreeMap::new(),
+                rebalance_interval_days: 5,
                 short_window: 2,
                 long_window: 4,
                 vol_window: 3,
@@ -894,6 +1291,7 @@ mod tests {
             StrategyConfig {
                 strategy_plugin: "layered_multi_factor".to_string(),
                 market_routing: BTreeMap::new(),
+                rebalance_interval_days: 5,
                 short_window: 2,
                 long_window: 4,
                 vol_window: 3,
@@ -949,6 +1347,7 @@ mod tests {
             StrategyConfig {
                 strategy_plugin: "momentum_guard".to_string(),
                 market_routing: BTreeMap::new(),
+                rebalance_interval_days: 5,
                 short_window: 2,
                 long_window: 4,
                 vol_window: 3,
@@ -977,6 +1376,116 @@ mod tests {
 
         assert_eq!(strategy.id(), "momentum_guard");
         assert!(available_strategy_plugins().contains(&"layered_multi_factor".to_string()));
+        assert!(available_strategy_plugins().contains(&"industry_relative_reversion".to_string()));
         assert!(available_strategy_plugins().contains(&"momentum_guard".to_string()));
+    }
+
+    #[test]
+    fn industry_relative_reversion_prefers_industry_laggard_with_volume_confirmation() {
+        let mut industries = HashMap::new();
+        industries.insert(("US".to_string(), "AAA".to_string()), "Tech".to_string());
+        industries.insert(("US".to_string(), "BBB".to_string()), "Tech".to_string());
+        industries.insert(("US".to_string(), "CCC".to_string()), "Banks".to_string());
+
+        let mut strategy = IndustryRelativeReversionStrategy::new(
+            StrategyConfig {
+                strategy_plugin: "industry_relative_reversion".to_string(),
+                market_routing: BTreeMap::new(),
+                rebalance_interval_days: 5,
+                short_window: 2,
+                long_window: 4,
+                vol_window: 3,
+                top_n: 1,
+                min_momentum: 0.0,
+                mean_reversion_window: 2,
+                volume_window: 3,
+                factor_momentum_weight: 0.15,
+                factor_mean_reversion_weight: 0.55,
+                factor_low_vol_weight: 0.10,
+                factor_volume_weight: 0.20,
+                risk_parity_blend: 0.5,
+                max_turnover_ratio: 1.0,
+                portfolio_method: "risk_parity".to_string(),
+                hrp_lookback: 5,
+                winsorize_pct: 0.05,
+                layer1_select_ratio: 1.0,
+                industry_neutral_strength: 0.0,
+                regime_vol_window: 4,
+                regime_target_vol: 0.02,
+                regime_floor_scale: 0.25,
+                regime_ceiling_scale: 1.25,
+            },
+            industries,
+        );
+
+        let base_date = NaiveDate::from_ymd_opt(2025, 1, 1).expect("date");
+        let days = [
+            (100.0, 100.0, 100.0, 1_000.0, 1_000.0, 900.0),
+            (108.0, 104.0, 101.0, 1_050.0, 1_000.0, 920.0),
+            (112.0, 107.0, 102.0, 1_100.0, 1_100.0, 930.0),
+            (113.0, 108.0, 103.0, 1_050.0, 2_000.0, 940.0),
+        ];
+
+        let mut final_targets = HashMap::new();
+        for (offset, day) in days.iter().enumerate() {
+            let bars = vec![
+                Bar {
+                    date: base_date + chrono::Duration::days(offset as i64),
+                    market: "US".to_string(),
+                    symbol: "AAA".to_string(),
+                    close: day.0,
+                    volume: day.3,
+                },
+                Bar {
+                    date: base_date + chrono::Duration::days(offset as i64),
+                    market: "US".to_string(),
+                    symbol: "BBB".to_string(),
+                    close: day.1,
+                    volume: day.4,
+                },
+                Bar {
+                    date: base_date + chrono::Duration::days(offset as i64),
+                    market: "US".to_string(),
+                    symbol: "CCC".to_string(),
+                    close: day.2,
+                    volume: day.5,
+                },
+            ];
+            final_targets = strategy.target_notionals(&bars, 100_000.0, &HashMap::new());
+        }
+
+        assert!(
+            final_targets.get("BBB").copied().unwrap_or(0.0)
+                > final_targets.get("AAA").copied().unwrap_or(0.0)
+        );
+
+        let next_bars = vec![
+            Bar {
+                date: base_date + chrono::Duration::days(days.len() as i64),
+                market: "US".to_string(),
+                symbol: "AAA".to_string(),
+                close: 113.0,
+                volume: 1_100.0,
+            },
+            Bar {
+                date: base_date + chrono::Duration::days(days.len() as i64),
+                market: "US".to_string(),
+                symbol: "BBB".to_string(),
+                close: 120.0,
+                volume: 2_100.0,
+            },
+            Bar {
+                date: base_date + chrono::Duration::days(days.len() as i64),
+                market: "US".to_string(),
+                symbol: "CCC".to_string(),
+                close: 104.0,
+                volume: 950.0,
+            },
+        ];
+        let cached_targets = strategy.target_notionals(&next_bars, 100_000.0, &HashMap::new());
+        assert_eq!(
+            cached_targets.get("BBB").copied().unwrap_or(0.0),
+            final_targets.get("BBB").copied().unwrap_or(0.0)
+        );
     }
 }

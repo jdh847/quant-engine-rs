@@ -51,14 +51,34 @@ fn stddev(xs: &[f64]) -> f64 {
     var.sqrt()
 }
 
-/// Compute the four raw factors for a single bar given its prior history.
+/// Raw per-symbol factor values for one bar. All cross-sectional standardization
+/// (z-score, ranking) happens later in IC computation; these are raw signals.
+#[derive(Debug, Clone, Copy)]
+struct RawFactors {
+    momentum: f64,
+    mean_reversion: f64,
+    /// Signed recent return over mean_reversion_window. Kept separately because
+    /// the cross-sectional industry-relative factor needs the raw return, not
+    /// its negation.
+    recent_return: f64,
+    reversal_1d: f64,
+    reversal_5d: f64,
+    /// low_vol signal = -volatility (higher = calmer).
+    low_vol: f64,
+    volume_signal: f64,
+    /// High volume on a down move = bullish capitulation; high volume on an up
+    /// move = exhaustion. = -sign(recent_return) * volume_signal.
+    volume_price_divergence: f64,
+}
+
+/// Compute the raw single-symbol factors for a bar given its prior history.
 /// Returns None if there isn't enough history yet.
 fn compute_factors(
     history: &SymbolHistory,
     current_close: f64,
     current_volume: f64,
     win: &FactorWindows,
-) -> Option<(f64, f64, f64, f64)> {
+) -> Option<RawFactors> {
     let closes_len = history.closes.len();
     let needed = win
         .long_window
@@ -77,17 +97,24 @@ fn compute_factors(
     let long_base = closes[closes_len - win.long_window];
     let momentum = current_close / long_base - 1.0;
 
-    // mean_reversion = -(current_close / close[len-mr_window] - 1)
+    // recent_return = current_close / close[len-mr_window] - 1 (signed)
     let mr_base = closes[closes_len - win.mean_reversion_window];
-    let mean_reversion = -(current_close / mr_base - 1.0);
+    let recent_return = current_close / mr_base - 1.0;
+    let mean_reversion = -recent_return;
 
-    // volatility = stddev of last vol_window log returns ending at current_close
+    // Short-horizon reversals (negated recent moves). The 5-day lag degrades
+    // gracefully when less history is available (clamped to >=1), so small-window
+    // callers still get a value instead of an out-of-bounds panic.
+    let reversal_1d = -(current_close / closes[closes_len - 1] - 1.0);
+    let rev5_lag = 5.min(closes_len - 1).max(1);
+    let reversal_5d = -(current_close / closes[closes_len - rev5_lag] - 1.0);
+
+    // volatility = stddev of last vol_window returns ending at current_close
     let vol_slice_start = closes_len - win.vol_window;
     let mut returns = Vec::with_capacity(win.vol_window);
     for i in vol_slice_start..closes_len - 1 {
         returns.push(closes[i + 1] / closes[i] - 1.0);
     }
-    // Include the return into current_close
     returns.push(current_close / closes[closes_len - 1] - 1.0);
     let vol = stddev(&returns).max(1e-6);
 
@@ -101,7 +128,24 @@ fn compute_factors(
         0.0
     };
 
-    Some((momentum, mean_reversion, vol, volume_signal))
+    let volume_price_divergence = if recent_return > 0.0 {
+        -volume_signal
+    } else if recent_return < 0.0 {
+        volume_signal
+    } else {
+        0.0
+    };
+
+    Some(RawFactors {
+        momentum,
+        mean_reversion,
+        recent_return,
+        reversal_1d,
+        reversal_5d,
+        low_vol: -vol,
+        volume_signal,
+        volume_price_divergence,
+    })
 }
 
 /// Build a timeline of cross-sectional factor snapshots from a chronologically
@@ -115,6 +159,7 @@ fn compute_factors(
 pub fn extract_factor_timeline(
     bars: &[Bar],
     windows: &FactorWindows,
+    industries: &HashMap<String, String>,
 ) -> Vec<DailyFactorSnapshot> {
     // Group bars by date, preserving chronological order.
     let mut by_date: BTreeMap<NaiveDate, Vec<&Bar>> = BTreeMap::new();
@@ -124,14 +169,13 @@ pub fn extract_factor_timeline(
 
     // Per-symbol history accumulated as we walk forward.
     let mut history: HashMap<String, SymbolHistory> = HashMap::new();
-    // Date-ordered factor values: date -> symbol -> (mom, mr, low_vol, volume)
-    let mut day_factors: BTreeMap<NaiveDate, HashMap<String, (f64, f64, f64, f64)>> =
-        BTreeMap::new();
+    // Date-ordered raw factors: date -> symbol -> RawFactors
+    let mut day_factors: BTreeMap<NaiveDate, HashMap<String, RawFactors>> = BTreeMap::new();
     // Date-ordered closes: date -> symbol -> close (for forward return calc)
     let mut day_closes: BTreeMap<NaiveDate, HashMap<String, f64>> = BTreeMap::new();
 
     for (&date, day_bars) in &by_date {
-        let mut factors_today: HashMap<String, (f64, f64, f64, f64)> = HashMap::new();
+        let mut factors_today: HashMap<String, RawFactors> = HashMap::new();
         let mut closes_today: HashMap<String, f64> = HashMap::new();
 
         for bar in day_bars {
@@ -144,12 +188,13 @@ pub fn extract_factor_timeline(
             // Now push today's bar into history for tomorrow's factor calc.
             h.closes.push_back(bar.close);
             h.volumes.push_back(bar.volume);
-            // Cap history at long_window so we don't grow unbounded.
+            // Cap history so we don't grow unbounded (keep enough for 5d reversal).
             let max_len = windows
                 .long_window
                 .max(windows.vol_window + 1)
                 .max(windows.mean_reversion_window + 1)
                 .max(windows.volume_window)
+                .max(6)
                 + 1;
             while h.closes.len() > max_len {
                 h.closes.pop_front();
@@ -196,25 +241,63 @@ pub fn extract_factor_timeline(
             continue;
         }
 
+        // Cross-sectional industry-relative reversion: own recent_return minus
+        // the equal-weight mean recent_return of its industry peers (>=2 names).
+        // Positive value = laggard vs industry = expected to revert up.
+        let mut industry_stats: HashMap<String, (usize, f64)> = HashMap::new();
+        for (sym, rf) in factors {
+            let ind = industry_of(industries, sym);
+            let e = industry_stats.entry(ind).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 += rf.recent_return;
+        }
+
         // Split each factor into its own cross-section map.
         let mut factor_map: HashMap<String, HashMap<String, f64>> = HashMap::new();
-        let momentum = factor_map.entry("momentum".to_string()).or_default();
-        for (sym, (m, _, _, _)) in factors {
-            momentum.insert(sym.clone(), *m);
-        }
-        let mr = factor_map.entry("mean_reversion".to_string()).or_default();
-        for (sym, (_, m, _, _)) in factors {
-            mr.insert(sym.clone(), *m);
-        }
-        // low_vol = inverse of volatility (higher = lower vol). Use -vol so
-        // larger value means "lower vol", consistent with strategy scoring.
-        let lv = factor_map.entry("low_vol".to_string()).or_default();
-        for (sym, (_, _, v, _)) in factors {
-            lv.insert(sym.clone(), -v);
-        }
-        let vol_sig = factor_map.entry("volume".to_string()).or_default();
-        for (sym, (_, _, _, vsig)) in factors {
-            vol_sig.insert(sym.clone(), *vsig);
+        for (sym, rf) in factors {
+            factor_map
+                .entry("momentum".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.momentum);
+            factor_map
+                .entry("mean_reversion".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.mean_reversion);
+            factor_map
+                .entry("reversal_1d".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.reversal_1d);
+            factor_map
+                .entry("reversal_5d".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.reversal_5d);
+            factor_map
+                .entry("low_vol".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.low_vol);
+            factor_map
+                .entry("volume".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.volume_signal);
+            factor_map
+                .entry("volume_price_divergence".to_string())
+                .or_default()
+                .insert(sym.clone(), rf.volume_price_divergence);
+
+            // industry_relative_reversion: only defined when the industry has
+            // >=2 members, otherwise the symbol is dropped from this factor's
+            // cross-section (not inserted as 0, which would bias the IC).
+            let ind = industry_of(industries, sym);
+            if let Some((count, sum)) = industry_stats.get(&ind) {
+                if *count >= 2 {
+                    let industry_mean = sum / *count as f64;
+                    let relative = industry_mean - rf.recent_return;
+                    factor_map
+                        .entry("industry_relative_reversion".to_string())
+                        .or_default()
+                        .insert(sym.clone(), relative);
+                }
+            }
         }
 
         snapshots.push(DailyFactorSnapshot {
@@ -227,8 +310,24 @@ pub fn extract_factor_timeline(
     snapshots
 }
 
+/// Look up a symbol's industry, falling back to a 2-char prefix bucket so the
+/// factor still groups *something* when no industry map is provided. Mirrors
+/// `IndustryRelativeReversionStrategy::industry_for` (sans market key).
+fn industry_of(industries: &HashMap<String, String>, symbol: &str) -> String {
+    industries.get(symbol).cloned().unwrap_or_else(|| {
+        let prefix: String = symbol.chars().take(2).collect();
+        if prefix.is_empty() {
+            "GEN".to_string()
+        } else {
+            prefix
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::NaiveDate;
 
     use crate::factor_ic::compute_factor_ics;
@@ -252,7 +351,7 @@ mod tests {
 
     #[test]
     fn empty_input_produces_empty_timeline() {
-        let timeline = extract_factor_timeline(&[], &FactorWindows::default());
+        let timeline = extract_factor_timeline(&[], &FactorWindows::default(), &HashMap::new());
         assert!(timeline.is_empty());
     }
 
@@ -264,7 +363,7 @@ mod tests {
             bar(d(2), "AAPL", 101.0, 1000.0),
             bar(d(3), "AAPL", 102.0, 1000.0),
         ];
-        let timeline = extract_factor_timeline(&bars, &FactorWindows::default());
+        let timeline = extract_factor_timeline(&bars, &FactorWindows::default(), &HashMap::new());
         assert!(
             timeline.is_empty(),
             "should not produce snapshots without enough history"
@@ -292,7 +391,7 @@ mod tests {
             b *= 1.02;
             c *= 1.03;
         }
-        let timeline = extract_factor_timeline(&bars, &win);
+        let timeline = extract_factor_timeline(&bars, &win, &HashMap::new());
         assert!(!timeline.is_empty());
 
         // momentum factor should have high IC
@@ -331,7 +430,7 @@ mod tests {
             bar(d(5), "X", 110.0, 1000.0),
             bar(d(5), "Y", 210.0, 1000.0),
         ];
-        let timeline = extract_factor_timeline(&bars, &win);
+        let timeline = extract_factor_timeline(&bars, &win, &HashMap::new());
         // The last-day snapshot has no forward return (skipped). For the
         // second-to-last day (day 4), forward returns are computed from day 5:
         //   X: 110/105 - 1 ≈ 0.0476
@@ -360,7 +459,7 @@ mod tests {
         for day in 1..=10u32 {
             bars.push(bar(d(day), "X", 100.0 + day as f64, 1000.0));
         }
-        let timeline = extract_factor_timeline(&bars, &win);
+        let timeline = extract_factor_timeline(&bars, &win, &HashMap::new());
         let last_date = timeline.iter().map(|s| s.date).max().unwrap();
         // Last snapshot's date should NOT be the last bar's date, because that
         // last bar has no forward return. Last bar is day 10.

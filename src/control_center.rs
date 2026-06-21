@@ -11,8 +11,10 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
 use crate::{
+    capital_readiness::{evaluate_capital_readiness, CapitalReadinessReport},
     paper_hints::{build_paper_hints, PaperHintsCompareInput, PaperHintsDaemonInput},
-    registry::{read_run_registry, top_registry_entries, RunRegistryEntry},
+    registry::{infer_registry_root, read_run_registry, top_registry_entries, RunRegistryEntry},
+    validation_snapshot::{load_validation_snapshot, ValidationSnapshot},
 };
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,8 @@ struct ControlCenterSnapshot {
     registry_top: Vec<RunRegistryEntry>,
     daemon: Option<DaemonState>,
     data_quality: Option<DataQualityStatus>,
+    validation: ValidationSnapshot,
+    capital_readiness: CapitalReadinessReport,
     robustness: HashMap<String, String>,
     research_report: HashMap<String, String>,
     recent_compare: Option<CompareStatus>,
@@ -110,6 +114,7 @@ pub fn run_control_center(req: &ControlCenterRequest) -> Result<ControlCenterRep
 }
 
 fn collect_snapshot(root: &Path) -> Result<ControlCenterSnapshot> {
+    let registry_root = infer_registry_root(root);
     let summary_path = first_existing_path(&[root.join("summary.txt")]);
     let summary = match summary_path {
         Some(path) => parse_key_value_file(&path)?,
@@ -164,6 +169,8 @@ fn collect_snapshot(root: &Path) -> Result<ControlCenterSnapshot> {
     };
     let compare_history = load_compare_history_status(root);
     let recent_compare = compare_history.first().cloned();
+    let validation = load_validation_snapshot(&registry_root);
+    let capital_readiness = evaluate_capital_readiness(&registry_root, &validation);
 
     Ok(ControlCenterSnapshot {
         summary,
@@ -171,6 +178,8 @@ fn collect_snapshot(root: &Path) -> Result<ControlCenterSnapshot> {
         registry_top,
         daemon,
         data_quality,
+        validation,
+        capital_readiness,
         robustness,
         research_report,
         recent_compare,
@@ -265,6 +274,101 @@ fn render_snapshot(
             out,
             "Data Quality | pass={} warn={} fail={}",
             quality.pass, quality.warn, quality.fail
+        )?;
+    }
+
+    if snapshot.validation.has_any() {
+        if let Some(full) = &snapshot.validation.full_real_window {
+            writeln!(
+                out,
+                "Strategy Validation | full_real tier={} sharpe={} pnl={} dd={} dq={}({}/{}/{}) test={} -> {}",
+                dash_if_empty(&full.readiness_tier),
+                format_decimal(full.sharpe),
+                format_pct(full.pnl_ratio),
+                format_pct(full.max_drawdown),
+                dash_if_empty(&full.data_quality_status),
+                full.pass_markets,
+                full.warn_markets,
+                full.fail_markets,
+                dash_if_empty(&full.test_start),
+                dash_if_empty(&full.test_end),
+            )?;
+        }
+        if let Some(recent) = &snapshot.validation.recent_real_window {
+            writeln!(
+                out,
+                "Recent Real OOS | tier={} sharpe={} pnl={} dd={} dq={} notes={}",
+                dash_if_empty(&recent.readiness_tier),
+                format_decimal(recent.sharpe),
+                format_pct(recent.pnl_ratio),
+                format_pct(recent.max_drawdown),
+                dash_if_empty(&recent.data_quality_status),
+                if recent.notes.is_empty() {
+                    "-".to_string()
+                } else {
+                    recent.notes.join("|")
+                },
+            )?;
+        }
+        if let Some(us_long) = &snapshot.validation.us_long_sample {
+            let route = snapshot
+                .validation
+                .route_decision
+                .as_ref()
+                .map(|item| dash_if_empty(&item.decision).to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let baseline = snapshot
+                .validation
+                .route_decision
+                .as_ref()
+                .and_then(|item| item.baseline_pnl_ratio);
+            writeln!(
+                out,
+                "US Long Sample | route={} baseline_pnl={} tuned_pnl={} tuned_dd={} tuned_sharpe={} trades={} rejections={}",
+                route,
+                format_pct(baseline),
+                format_pct(us_long.pnl_ratio),
+                format_pct(us_long.max_drawdown),
+                format_decimal(us_long.sharpe),
+                format_usize(us_long.trades),
+                format_usize(us_long.rejections),
+            )?;
+        }
+    }
+    if !snapshot.capital_readiness.summary.is_empty() {
+        writeln!(
+            out,
+            "Capital Readiness | decision={} blockers={}",
+            snapshot.capital_readiness.decision,
+            if snapshot.capital_readiness.blockers.is_empty() {
+                "-".to_string()
+            } else {
+                snapshot.capital_readiness.blockers.join("|")
+            }
+        )?;
+        writeln!(
+            out,
+            "  Signal | {} | {}",
+            snapshot.capital_readiness.signal_gate.status,
+            snapshot.capital_readiness.signal_gate.headline
+        )?;
+        writeln!(
+            out,
+            "  Portfolio | {} | {}",
+            snapshot.capital_readiness.portfolio_gate.status,
+            snapshot.capital_readiness.portfolio_gate.headline
+        )?;
+        writeln!(
+            out,
+            "  Execution | {} | {}",
+            snapshot.capital_readiness.execution_gate.status,
+            snapshot.capital_readiness.execution_gate.headline
+        )?;
+        writeln!(
+            out,
+            "  Behavior | {} | {}",
+            snapshot.capital_readiness.behavior_gate.status,
+            snapshot.capital_readiness.behavior_gate.headline
         )?;
     }
 
@@ -764,6 +868,32 @@ fn parse_decimal(value: Option<&String>) -> Option<f64> {
     let raw = value?;
     let trimmed = raw.trim().trim_end_matches('%');
     trimmed.parse::<f64>().ok()
+}
+
+fn format_decimal(value: Option<f64>) -> String {
+    value
+        .map(|item| format!("{item:.3}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_pct(value: Option<f64>) -> String {
+    value
+        .map(|item| format!("{:.2}%", item * 100.0))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_usize(value: Option<usize>) -> String {
+    value
+        .map(|item| item.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn dash_if_empty(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "-"
+    } else {
+        value
+    }
 }
 
 #[cfg(test)]

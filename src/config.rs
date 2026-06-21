@@ -32,6 +32,8 @@ pub struct StrategyConfig {
     pub mean_reversion_window: usize,
     #[serde(default = "default_volume_window")]
     pub volume_window: usize,
+    #[serde(default = "default_rebalance_interval_days")]
+    pub rebalance_interval_days: usize,
     #[serde(default = "default_factor_momentum_weight")]
     pub factor_momentum_weight: f64,
     #[serde(default = "default_factor_mean_reversion_weight")]
@@ -97,6 +99,10 @@ fn default_mean_reversion_window() -> usize {
 }
 
 fn default_volume_window() -> usize {
+    5
+}
+
+fn default_rebalance_interval_days() -> usize {
     5
 }
 
@@ -543,7 +549,10 @@ fn validate_market_execution(name: &str, cost: MarketExecutionCost) -> Result<()
 
 fn validate_strategy(strategy: &StrategyConfig) -> Result<()> {
     let plugin = strategy.strategy_plugin.trim();
-    let built_in = plugin == "layered_multi_factor" || plugin == "momentum_guard";
+    let built_in = matches!(
+        plugin,
+        "layered_multi_factor" | "momentum_guard" | "industry_relative_reversion"
+    );
     if !built_in && !is_registered_sdk_plugin(plugin) {
         return Err(anyhow!(
             "strategy.strategy_plugin '{}' is not registered; run `cargo run -- plugins` or `cargo run -- sdk-register --package-dir <path>`",
@@ -566,6 +575,9 @@ fn validate_strategy(strategy: &StrategyConfig) -> Result<()> {
     }
     if strategy.volume_window < 2 {
         return Err(anyhow!("strategy volume_window must be >= 2"));
+    }
+    if strategy.rebalance_interval_days < 1 {
+        return Err(anyhow!("strategy rebalance_interval_days must be >= 1"));
     }
     if strategy.risk_parity_blend < 0.0 || strategy.risk_parity_blend > 1.0 {
         return Err(anyhow!("strategy risk_parity_blend must be in [0, 1]"));
@@ -612,7 +624,10 @@ fn validate_strategy(strategy: &StrategyConfig) -> Result<()> {
     for (market, route) in &strategy.market_routing {
         if let Some(plugin) = &route.strategy_plugin {
             let plugin = plugin.trim();
-            let built_in = plugin == "layered_multi_factor" || plugin == "momentum_guard";
+            let built_in = matches!(
+                plugin,
+                "layered_multi_factor" | "momentum_guard" | "industry_relative_reversion"
+            );
             if !built_in && !is_registered_sdk_plugin(plugin) {
                 return Err(anyhow!(
                     "strategy.market_routing.{market}.strategy_plugin '{}' is not registered",

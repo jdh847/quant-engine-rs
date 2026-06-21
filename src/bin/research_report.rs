@@ -138,9 +138,9 @@ fn parse_portfolio_methods(text: &str) -> Result<Vec<String>> {
         return Err(anyhow!("empty portfolio method list"));
     }
     for method in &methods {
-        if method != "risk_parity" && method != "hrp" {
+        if method != "risk_parity" && method != "hrp" && method != "herc" {
             return Err(anyhow!(
-                "unsupported portfolio method: {method}; expected risk_parity or hrp"
+                "unsupported portfolio method: {method}; expected risk_parity, hrp, or herc"
             ));
         }
     }

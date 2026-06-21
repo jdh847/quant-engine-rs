@@ -2,6 +2,7 @@
 name = "private_quant_bot"
 version = "0.1.0"
 edition = "2021"
+default-run = "private_quant_bot"
 description = "Personal multi-market quant bot MVP in Rust"
 license = "MIT OR Apache-2.0"
 readme = "README.md"

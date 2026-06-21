@@ -117,6 +117,7 @@ fn scenario_strategy(
     StrategyConfig {
         strategy_plugin: base.strategy_plugin.clone(),
         market_routing: BTreeMap::new(),
+        rebalance_interval_days: base.rebalance_interval_days,
         short_window,
         long_window,
         vol_window,
@@ -260,21 +261,24 @@ fn write_dataset_manifest(path: impl AsRef<Path>, cfg: &BotConfig) -> Result<()>
 }
 
 fn validate_portfolio_method(method: &str) -> Result<()> {
-    if method == "risk_parity" || method == "hrp" {
+    if method == "risk_parity" || method == "hrp" || method == "herc" {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "unsupported portfolio method: {method}; expected risk_parity or hrp"
+            "unsupported portfolio method: {method}; expected risk_parity, hrp, or herc"
         ))
     }
 }
 
 fn validate_strategy_plugin(plugin: &str) -> Result<()> {
-    if plugin == "layered_multi_factor" || plugin == "momentum_guard" {
+    if plugin == "layered_multi_factor"
+        || plugin == "momentum_guard"
+        || plugin == "industry_relative_reversion"
+    {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "unsupported strategy plugin: {plugin}; expected layered_multi_factor or momentum_guard"
+            "unsupported strategy plugin: {plugin}; expected layered_multi_factor, momentum_guard, or industry_relative_reversion"
         ))
     }
 }

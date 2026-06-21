@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use chrono::NaiveDate;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::calendar::ExchangeCalendar;
 use crate::config::BotConfig;
@@ -17,7 +17,7 @@ pub struct DataQualityRequest {
     pub gap_days_threshold: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DataQualityRow {
     pub market: String,
     pub rows: usize,
@@ -32,7 +32,7 @@ pub struct DataQualityRow {
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DataQualityReport {
     pub rows: Vec<DataQualityRow>,
 }
