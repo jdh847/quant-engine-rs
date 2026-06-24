@@ -1102,7 +1102,14 @@ fn run_command(
         .with_context(|| format!("create output_dir failed: {output_dir}"))?;
     write_config_snapshot_redacted(Path::new(config_path), Path::new(output_dir))?;
 
-    let result = QuantBotEngine::from_config(cfg.clone(), data.clone())?.run();
+    let delistings = load_delistings_for_config(&cfg)?;
+    if !delistings.is_empty() {
+        let events: usize = delistings.values().map(|v| v.len()).sum();
+        println!("loaded {events} delisting events (forced-liquidation feed active)");
+    }
+    let result = QuantBotEngine::from_config(cfg.clone(), data.clone())?
+        .with_delistings(delistings)
+        .run();
     write_outputs(output_dir, &result)?;
     let attribution = write_factor_attribution_report(&cfg, &data, output_dir)?;
     let stats = summarize_result(&result);
@@ -1372,6 +1379,30 @@ fn load_data_for_config(cfg: &private_quant_bot::config::BotConfig) -> Result<Cs
             .map(|m| (m.name.clone(), m.data_file.clone()))
             .collect(),
     )
+}
+
+/// Optional delisting feed: looks for a `delistings.csv` in the directory of any
+/// market's data file (survivorship-free datasets emit one alongside the bars).
+/// Returns an empty map when absent — delistings are opt-in.
+fn load_delistings_for_config(
+    cfg: &private_quant_bot::config::BotConfig,
+) -> Result<
+    std::collections::HashMap<chrono::NaiveDate, Vec<private_quant_bot::delisting::DelistingEvent>>,
+> {
+    use private_quant_bot::delisting::load_optional_grouped;
+    let mut seen = std::collections::HashSet::new();
+    for market in cfg.markets.values() {
+        if let Some(dir) = market.data_file.parent() {
+            let path = dir.join("delistings.csv");
+            if seen.insert(path.clone()) {
+                let grouped = load_optional_grouped(&path)?;
+                if !grouped.is_empty() {
+                    return Ok(grouped);
+                }
+            }
+        }
+    }
+    Ok(std::collections::HashMap::new())
 }
 
 fn replay_command(

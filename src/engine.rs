@@ -7,6 +7,7 @@ use crate::{
     calendar::ExchangeCalendar,
     config::{BotConfig, StrategyConfig},
     data::CsvDataPortal,
+    delisting::DelistingEvent,
     execution::{build_broker, BrokerAdapter, ExecutionAdapter, PaperBroker},
     market::MarketRuleEngine,
     metrics::compute_performance_metrics,
@@ -30,6 +31,8 @@ pub struct QuantBotEngine<E: ExecutionAdapter> {
     risk: UnifiedRiskManager,
     market_rules: MarketRuleEngine,
     broker: E,
+    /// Optional delisting feed, keyed by event date. Empty by default.
+    delistings: HashMap<NaiveDate, Vec<DelistingEvent>>,
 }
 
 impl QuantBotEngine<BrokerAdapter> {
@@ -100,7 +103,19 @@ impl<E: ExecutionAdapter> QuantBotEngine<E> {
             risk,
             market_rules,
             broker,
+            delistings: HashMap::new(),
         }
+    }
+
+    /// Attach a delisting feed (keyed by date). Held positions in a delisting's
+    /// (market, symbol) are force-liquidated at its terminal price on that date,
+    /// so the terminal P&L is realized instead of marked stale forever.
+    pub fn with_delistings(
+        mut self,
+        delistings: HashMap<NaiveDate, Vec<DelistingEvent>>,
+    ) -> Self {
+        self.delistings = delistings;
+        self
     }
 
     pub fn run(mut self) -> RunResult {
@@ -171,6 +186,29 @@ impl<E: ExecutionAdapter> QuantBotEngine<E> {
                 }
 
                 self.market_rules.end_day_update(&bars);
+            }
+
+            // Realize any delistings for this date BEFORE recording equity, so
+            // the curve and drawdown capture the terminal P&L. A held name that
+            // delists is liquidated at its terminal price; without this it would
+            // keep its last close as equity forever (survivorship on the P&L).
+            if let Some(events) = self.delistings.get(&bar_date).cloned() {
+                for event in events {
+                    if self.broker.position_qty(&event.market, &event.symbol) > 0 {
+                        prices.insert(
+                            (event.market.clone(), event.symbol.clone()),
+                            event.terminal_price.max(0.0),
+                        );
+                        if let Some(trade) = self.broker.liquidate_position(
+                            bar_date,
+                            &event.market,
+                            &event.symbol,
+                            event.terminal_price,
+                        ) {
+                            result.trades.push(trade);
+                        }
+                    }
+                }
             }
 
             let equity_after = self.broker.equity(&prices);
@@ -491,6 +529,112 @@ mod tests {
         // so delta == 0 check fails but delta_notional < min kicks in... let's just
         // ensure no panic.
         let _ = orders;
+    }
+
+    // ── Delisting feed realizes terminal P&L end-to-end ───────
+    #[test]
+    fn delisting_realizes_loss_and_closes_position() {
+        use crate::delisting::{group_by_date, DelistingEvent};
+        use crate::model::Side;
+        use chrono::{Datelike, Duration, NaiveDate};
+        use std::collections::HashMap as Map;
+        use std::io::Write;
+
+        // Generate N weekday dates so market-rule trading-day checks pass.
+        let mut dates = Vec::new();
+        let mut d = NaiveDate::from_ymd_opt(2025, 1, 2).unwrap();
+        while dates.len() < 22 {
+            let wd = d.weekday().number_from_monday();
+            if wd <= 5 {
+                dates.push(d);
+            }
+            d += Duration::days(1);
+        }
+
+        // RISE: rises ~2%/day so momentum_guard holds it; bars STOP at index 12
+        // (delisted). FLAT: constant, never selected (no trend), extends the
+        // timeline past the delisting so we see post-event behavior.
+        let dead_idx = 12usize;
+        let mut csv = String::from("date,symbol,close,adj_close,volume\n");
+        let mut rise = 100.0f64;
+        for (i, dt) in dates.iter().enumerate() {
+            if i <= dead_idx {
+                csv.push_str(&format!(
+                    "{},RISE,{:.4},{:.4},1000000\n",
+                    dt, rise, rise
+                ));
+            }
+            csv.push_str(&format!("{},FLAT,50.0000,50.0000,1000000\n", dt));
+            rise *= 1.02;
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "delist_engine_test_{}",
+            dates.len() as u64 * 1_000_003
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let csv_path = dir.join("us.csv");
+        let mut f = std::fs::File::create(&csv_path).expect("create");
+        f.write_all(csv.as_bytes()).expect("write");
+
+        // Single-US config pointing at the synthetic CSV.
+        let mut cfg = load_config("config/bot.toml").expect("config");
+        cfg.markets.retain(|name, _| name == "US");
+        {
+            let us = cfg.markets.get_mut("US").unwrap();
+            us.allocation = 1.0;
+            us.data_file = csv_path.clone();
+            us.min_trade_notional = 0.0;
+        }
+        // Relax caps so a single name (RISE) can actually be held; otherwise the
+        // symbol-weight cap rejects the whole order and nothing is held.
+        cfg.risk.max_symbol_weight = 1.0;
+        cfg.risk.max_gross_exposure_ratio = 1.0;
+        cfg.risk
+            .currency_max_net_exposure_ratio
+            .insert("USD".to_string(), 1.0);
+
+        let data = CsvDataPortal::new(vec![("US".to_string(), csv_path.clone())])
+            .expect("portal");
+
+        let delist_date = dates[dead_idx];
+        let delistings = group_by_date(vec![DelistingEvent {
+            date: delist_date,
+            market: "US".to_string(),
+            symbol: "RISE".to_string(),
+            terminal_price: 0.0,
+            reason: "bankruptcy".to_string(),
+        }]);
+
+        let result = QuantBotEngine::from_config_force_sim(cfg, data)
+            .with_delistings(delistings)
+            .run();
+
+        // A forced Sell of RISE at terminal price 0 must appear on the delist date.
+        let liq = result.trades.iter().find(|t| {
+            t.symbol == "RISE" && t.side == Side::Sell && t.price == 0.0 && t.date == delist_date
+        });
+        assert!(
+            liq.is_some(),
+            "expected a forced liquidation Sell@0 for RISE on {delist_date}; trades={:?}",
+            result.trades
+        );
+
+        // Equity must DROP across the delisting (terminal loss realized), not stay
+        // flat as a stale mark would imply.
+        let eq: Map<NaiveDate, f64> = result
+            .equity_curve
+            .iter()
+            .map(|p| (p.date, p.equity))
+            .collect();
+        let before = eq[&dates[dead_idx - 1]];
+        let after = eq[&delist_date];
+        assert!(
+            after < before,
+            "equity should fall when RISE delists at 0: before={before} after={after}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── Full run does not crash and equity is monotonically tracked

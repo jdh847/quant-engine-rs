@@ -29,6 +29,20 @@ pub trait ExecutionAdapter {
     fn net_exposure(&self, prices: &PriceMap) -> f64;
     fn reconcile_day(&mut self, date: NaiveDate);
     fn end_of_day(&mut self, date: NaiveDate);
+    /// Force-liquidate the entire position in (market, symbol) at `price`,
+    /// bypassing slippage, fees and T+1. Models a delisting / corporate-action
+    /// exit where the holding is removed at a terminal value (bankruptcy
+    /// recovery ~0, M&A cash-out, demotion last price). Returns the realizing
+    /// Trade, or None when there is no open position. This is what stops a
+    /// delisted name from being marked at a stale price forever, which would
+    /// reintroduce survivorship bias on the P&L side.
+    fn liquidate_position(
+        &mut self,
+        date: NaiveDate,
+        market: &str,
+        symbol: &str,
+        price: f64,
+    ) -> Option<Trade>;
 }
 
 #[derive(Debug)]
@@ -107,6 +121,21 @@ impl ExecutionAdapter for BrokerAdapter {
         match self {
             BrokerAdapter::Sim(inner) => inner.end_of_day(date),
             BrokerAdapter::IbkrPaper(inner) => inner.end_of_day(date),
+        }
+    }
+
+    fn liquidate_position(
+        &mut self,
+        date: NaiveDate,
+        market: &str,
+        symbol: &str,
+        price: f64,
+    ) -> Option<Trade> {
+        match self {
+            BrokerAdapter::Sim(inner) => inner.liquidate_position(date, market, symbol, price),
+            BrokerAdapter::IbkrPaper(inner) => {
+                inner.sim.liquidate_position(date, market, symbol, price)
+            }
         }
     }
 }
@@ -378,6 +407,42 @@ impl PaperBroker {
         trades
     }
 
+    /// Force-liquidate the whole position at a terminal `price` (no slippage, no
+    /// fees, no T+1). Returns the realizing Trade or None if flat. Negative
+    /// prices are clamped to 0 (bankruptcy floor).
+    pub fn liquidate_position(
+        &mut self,
+        date: NaiveDate,
+        market: &str,
+        symbol: &str,
+        price: f64,
+    ) -> Option<Trade> {
+        let key = (market.to_owned(), symbol.to_owned());
+        let qty = self.positions.get(&key).map(|p| p.qty).unwrap_or(0);
+        if qty <= 0 {
+            return None;
+        }
+        let terminal = price.max(0.0);
+        let fx = self.market_fx_to_base(market);
+        let proceeds = terminal * qty as f64 * fx;
+
+        if let Some(position) = self.positions.get_mut(&key) {
+            position.qty = 0;
+            position.avg_price = 0.0;
+        }
+        self.cash += proceeds;
+
+        Some(Trade {
+            date,
+            market: market.to_owned(),
+            symbol: symbol.to_owned(),
+            side: Side::Sell,
+            qty,
+            price: terminal,
+            fees: 0.0,
+        })
+    }
+
     pub fn equity(&self, prices: &PriceMap) -> f64 {
         self.cash + self.net_exposure(prices)
     }
@@ -457,6 +522,16 @@ impl ExecutionAdapter for PaperBroker {
 
     fn end_of_day(&mut self, date: NaiveDate) {
         PaperBroker::end_of_day(self, date);
+    }
+
+    fn liquidate_position(
+        &mut self,
+        date: NaiveDate,
+        market: &str,
+        symbol: &str,
+        price: f64,
+    ) -> Option<Trade> {
+        PaperBroker::liquidate_position(self, date, market, symbol, price)
     }
 }
 
@@ -990,6 +1065,16 @@ impl ExecutionAdapter for IbkrPaperAdapter {
     fn end_of_day(&mut self, date: NaiveDate) {
         IbkrPaperAdapter::end_of_day(self, date);
     }
+
+    fn liquidate_position(
+        &mut self,
+        date: NaiveDate,
+        market: &str,
+        symbol: &str,
+        price: f64,
+    ) -> Option<Trade> {
+        self.sim.liquidate_position(date, market, symbol, price)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1155,6 +1240,78 @@ mod tests {
         assert!((broker.net_exposure(&prices) - 1_000.0).abs() < 1e-9);
         assert!((broker.gross_exposure(&prices) - 1_000.0).abs() < 1e-9);
         assert!((broker.equity(&prices) - 100_000.0).abs() < 1e-9);
+    }
+
+    // ── Delisting force-liquidation ───────────────────────────
+    fn buy_one(broker: &mut PaperBroker, market: &str, symbol: &str, qty: i64, px: f64) {
+        let date = NaiveDate::from_ymd_opt(2025, 1, 10).expect("valid");
+        let order = Order {
+            date,
+            market: market.to_string(),
+            symbol: symbol.to_string(),
+            side: Side::Buy,
+            qty,
+        };
+        let mut prices = PriceMap::new();
+        prices.insert((market.to_string(), symbol.to_string()), px);
+        broker.execute_orders(&[order], &prices);
+    }
+
+    #[test]
+    fn liquidate_at_zero_realizes_full_loss() {
+        // Buy 100 @ $10 (no costs) -> cash 99_000, holding worth 1_000.
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        buy_one(&mut broker, "US", "DEAD", 100, 10.0);
+        assert!((broker.cash - 99_000.0).abs() < 1e-9);
+
+        let d = NaiveDate::from_ymd_opt(2025, 3, 16).expect("valid");
+        let trade = broker
+            .liquidate_position(d, "US", "DEAD", 0.0)
+            .expect("liquidation trade");
+
+        // Bankruptcy at 0: position gone, cash unchanged (the 1_000 is lost),
+        // and equity is now 99_000 — NOT the 100_000 a stale mark would imply.
+        assert_eq!(trade.side, Side::Sell);
+        assert_eq!(trade.qty, 100);
+        assert!((trade.price - 0.0).abs() < 1e-9);
+        assert_eq!(broker.position_qty("US", "DEAD"), 0);
+        assert!((broker.cash - 99_000.0).abs() < 1e-9);
+        assert!((broker.equity(&PriceMap::new()) - 99_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn liquidate_at_cash_value_realizes_proceeds() {
+        // M&A cash-out at $5 on a position bought at $10.
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        buy_one(&mut broker, "US", "ACQ", 100, 10.0);
+        let d = NaiveDate::from_ymd_opt(2025, 6, 1).expect("valid");
+        let trade = broker.liquidate_position(d, "US", "ACQ", 5.0).expect("trade");
+        assert_eq!(trade.qty, 100);
+        assert_eq!(broker.position_qty("US", "ACQ"), 0);
+        // 99_000 + 100*5 = 99_500
+        assert!((broker.cash - 99_500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn liquidate_flat_position_is_noop() {
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0);
+        let d = NaiveDate::from_ymd_opt(2025, 6, 1).expect("valid");
+        assert!(broker.liquidate_position(d, "US", "NONE", 1.0).is_none());
+        assert!((broker.cash - 100_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn liquidate_uses_base_currency_proceeds() {
+        // JP fx 0.01: buy 100 @ 1000 local (=1000 base). Liquidate at 500 local
+        // -> proceeds 100*500*0.01 = 500 base.
+        let mut broker = PaperBroker::new(100_000.0, 0.0, 0.0)
+            .with_market_fx_to_base(HashMap::from([("JP".to_string(), 0.01)]));
+        buy_one(&mut broker, "JP", "7203", 100, 1_000.0);
+        assert!((broker.cash - 99_000.0).abs() < 1e-9);
+        let d = NaiveDate::from_ymd_opt(2025, 6, 1).expect("valid");
+        broker.liquidate_position(d, "JP", "7203", 500.0).expect("trade");
+        assert!((broker.cash - 99_500.0).abs() < 1e-9);
+        assert_eq!(broker.position_qty("JP", "7203"), 0);
     }
 
     #[test]

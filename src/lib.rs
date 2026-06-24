@@ -8,6 +8,7 @@ pub mod config;
 pub mod control_center;
 pub mod daemon;
 pub mod data;
+pub mod delisting;
 pub mod data_quality;
 pub mod dataset_manifest;
 pub mod doctor;
