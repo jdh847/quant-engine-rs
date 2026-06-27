@@ -141,7 +141,9 @@ def run_pipeline(source: Source, start: dt.date, end: dt.date, out_dir: Path) ->
 
     # ④ emit.
     equities_path = out_dir / f"{_csv_stem(market)}_equities.csv"
-    delistings_path = out_dir / f"{_csv_stem(market)}_delistings.csv"
+    # Single `delistings.csv` per data dir (rows carry a `market` column, so one
+    # file covers all markets) — exactly the name the engine auto-loads.
+    delistings_path = out_dir / "delistings.csv"
     industries_path = out_dir / f"{_csv_stem(market)}_industries.csv"
     manifest_path = out_dir / "DATASET_MANIFEST.json"
 
@@ -315,10 +317,27 @@ class SyntheticSource(Source):
         amp = 0.01 + 0.02 * s                 # sine amplitude
         freq = 0.05 + 0.1 * s
         price = 20.0 + 80.0 * s               # starting price 20..100
+
+        # A bankruptcy name (terminal 0) should DECLINE into delisting -- that is
+        # exactly the falling-knife laggard a reversion strategy buys, then gets
+        # wiped on by the terminal-0 liquidation. Model the last ~40 trading days
+        # as a steady drawdown so the survivorship trap is real, not escapable at
+        # a high last price.
+        bankruptcy = next(
+            (e for e in self._delistings
+             if e.symbol == symbol and e.terminal_price == 0.0), None
+        )
+        days = _weekdays(start, end)
+        decay_start = None
+        if bankruptcy is not None and bankruptcy.date in days:
+            decay_start = max(0, days.index(bankruptcy.date) - 40)
+
         bars = []
-        for t, day in enumerate(_weekdays(start, end)):
+        for t, day in enumerate(days):
             r = drift + amp * math.sin(t * freq)
-            price = max(0.5, price * (1.0 + r))
+            if decay_start is not None and t >= decay_start:
+                r -= 0.05  # ~5%/day bleed into bankruptcy
+            price = max(0.05, price * (1.0 + r))
             vol = 1_000_000 * (0.5 + s)
             bars.append(Bar(day, symbol, price, price, vol))
         return bars
